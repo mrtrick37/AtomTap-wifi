@@ -1,0 +1,4 @@
+releasever: rawhide
+repos:
+  - rawhide
+include: fedora-iot-bootc.yaml
