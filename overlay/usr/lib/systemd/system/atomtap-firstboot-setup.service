@@ -1,0 +1,18 @@
+[Unit]
+Description=AtomTap first-boot required setup
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=multi-user.target atomtap-forward.service
+ConditionPathExists=!/var/lib/atomtap/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/echo "AtomTap setup required: complete username/password/collector IP on console to continue."
+ExecStart=/usr/local/sbin/atomtap-firstboot.sh
+StandardInput=tty-force
+StandardOutput=journal+console
+StandardError=journal+console
+TTYPath=/dev/console
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
