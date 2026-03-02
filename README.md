@@ -42,6 +42,8 @@ At minimum, ensure these files land in the final image:
 	- username
 	- password
 	- collector destination IP (`COLLECTOR_IP`)
+	- Wi-Fi IPv4 address/CIDR for `wlan0` (required)
+	- Wi-Fi IPv4 gateway (optional)
 3. After setup completes, `atomtap-forward.service` starts automatically.
 4. Verify status:
 
@@ -60,8 +62,10 @@ and capture traffic from that VXLAN interface.
 - `atomtap-firstboot-setup.service` runs before `multi-user.target`
 - console banner shown at boot:
 	- `AtomTap setup required: complete username/password/collector IP on console to continue.`
-- it prompts for username, password, and destination IP
-- it creates/updates the user account and writes `COLLECTOR_IP` to `/etc/atomtap/forward.env`
+- `Wi-Fi IPv4 address/CIDR is also required and will be applied to wlan0 via NetworkManager.`
+- it prompts for username, password, destination IP, and `wlan0` IPv4 configuration
+- it creates/updates the user account and writes config values to `/etc/atomtap/forward.env`
+- it applies static IPv4 configuration to `wlan0` via NetworkManager
 - it writes `/var/lib/atomtap/firstboot.done`
 - `atomtap-forward.service` is gated by that file and will not run before setup is complete
 
@@ -72,8 +76,9 @@ If setup is interrupted, reboot and complete the prompts; forwarding remains blo
 1. Boot reaches first-boot setup service.
 2. Console banner is displayed.
 3. Prompts require username, password, and collector destination IP.
-4. Setup writes `/var/lib/atomtap/firstboot.done` and updates `/etc/atomtap/forward.env`.
-5. Forwarding service starts and configures VXLAN + `tc` mirror rules.
+4. Prompts require `wlan0` IPv4 address/CIDR (and optional gateway).
+5. Setup applies `wlan0` IPv4 config and writes `/var/lib/atomtap/firstboot.done`.
+6. Forwarding service starts and configures VXLAN + `tc` mirror rules.
 
 ## Optional headless timeout / fallback mode
 
@@ -175,23 +180,30 @@ Run these on the Pi after first boot:
 3. Confirm tap config has collector IP set:
 
 	```bash
-	grep -E '^(ETH_IFACE|WIFI_IFACE|COLLECTOR_IP|VXLAN_ID|VXLAN_PORT)=' /etc/atomtap/forward.env
+	grep -E '^(ETH_IFACE|WIFI_IFACE|COLLECTOR_IP|WLAN_IPV4_CIDR|WLAN_IPV4_GATEWAY|VXLAN_ID|VXLAN_PORT)=' /etc/atomtap/forward.env
 	```
 
-4. Confirm service is active:
+4. Confirm `wlan0` got the configured address:
+
+	```bash
+	ip -4 addr show wlan0
+	nmcli -f NAME,DEVICE,IP4.ADDRESS,IP4.GATEWAY connection show --active
+	```
+
+5. Confirm service is active:
 
 	```bash
 	sudo systemctl is-enabled atomtap-forward.service
 	sudo systemctl status atomtap-forward.service --no-pager
 	```
 
-5. Confirm mirror filters and VXLAN interface exist:
+6. Confirm mirror filters and VXLAN interface exist:
 
 	```bash
 	sudo /usr/local/sbin/atomtap-forward.sh status
 	```
 
-6. Optional live check from Pi while traffic exists on `eth0`:
+7. Optional live check from Pi while traffic exists on `eth0`:
 
 	```bash
 	sudo tcpdump -ni wlan0 udp port 4789
