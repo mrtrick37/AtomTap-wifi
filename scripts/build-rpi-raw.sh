@@ -143,7 +143,11 @@ run_builder_with_status_stream() {
   }
 
   coproc BUILDER_STREAM { "${cmd[@]}" 2>&1; }
-  local builder_pid="$COPROC_PID"
+  local builder_pid="${BUILDER_STREAM_PID:-${COPROC_PID:-}}"
+  if [[ -z "$builder_pid" ]]; then
+    echo "ERROR: Failed to obtain builder process PID from coprocess." >&2
+    return 1
+  fi
   local builder_fd
   exec {builder_fd}<&"${BUILDER_STREAM[0]}"
 
