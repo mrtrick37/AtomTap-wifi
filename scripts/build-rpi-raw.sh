@@ -215,6 +215,10 @@ ${raw_img}2 : start=$p2_start, size=$new_p2_size_sectors, type=$p2_type
 ${raw_img}3 : start=$p3_start, size=$new_p3_size_sectors, type=$p3_type
 EOF
 
+  if command -v sgdisk >/dev/null 2>&1; then
+    sudo sgdisk --attributes=1:set:2 "$raw_img" >/dev/null
+  fi
+
   loopdev="$(sudo losetup --find --show -P "$raw_img")"
   cleanup_needed=1
   sudo e2fsck -fy "${loopdev}p2"
