@@ -27,7 +27,7 @@ print_build_identity() {
   echo "Repo root: $REPO_ROOT"
   echo "Git commit: $git_commit"
   echo "Script sha256: $script_hash"
-  echo "Output mode: raw-only (compression disabled)"
+  echo "Output mode: disk.raw only"
 }
 
 require_arm64_binfmt() {
@@ -65,12 +65,6 @@ EOF
 mkdir -p "$OUTPUT_DIR"
 require_arm64_binfmt
 print_build_identity
-
-RAW_XZ_CANDIDATE="$OUTPUT_DIR/image/disk.raw.xz"
-if [[ -f "$RAW_XZ_CANDIDATE" ]]; then
-  echo "Removing stale compressed artifact from previous runs: $RAW_XZ_CANDIDATE"
-  rm -f "$RAW_XZ_CANDIDATE"
-fi
 
 echo "[1/4] Building arm64 bootc container image: $IMAGE_NAME"
 podman build --platform linux/arm64 -f "$REPO_ROOT/Containerfile.rpi" -t "$IMAGE_NAME" "$REPO_ROOT"
