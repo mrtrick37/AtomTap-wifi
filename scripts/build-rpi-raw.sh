@@ -388,6 +388,7 @@ EOF
   sudo tee "$efi_mnt/config.txt" >/dev/null <<'EOF'
 arm_64bit=1
 enable_uart=1
+os_check=0
 kernel=u-boot.bin
 EOF
 
