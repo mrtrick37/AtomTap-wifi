@@ -6,13 +6,13 @@ ConditionPathExists=!/var/lib/atomtap/firstboot.done
 
 [Service]
 Type=oneshot
-ExecStartPre=/usr/bin/echo "AtomTap setup required: complete username/password/collector IP on console to continue."
+ExecStartPre=/usr/bin/echo "AtomTap setup required: complete username/password/collector IP on tty1 to continue."
 ExecStartPre=/usr/bin/echo "Wi-Fi IPv4 address/CIDR is also required and will be applied to wlan0 via NetworkManager."
 ExecStart=/usr/local/sbin/atomtap-firstboot.sh
 StandardInput=tty-force
 StandardOutput=journal+console
 StandardError=journal+console
-TTYPath=/dev/console
+TTYPath=/dev/tty1
 RemainAfterExit=no
 
 [Install]

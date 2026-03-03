@@ -129,20 +129,18 @@ run_builder_with_status_stream() {
   local ostree_started_at=0
   local progress_line_active=0
 
-  render_ostree_progress_line() {
+  render_ostree_spinner_line() {
     local elapsed="$1"
-    local bar_width=24
-    local cycle_seconds=120
-    local progress_percent=$(((elapsed % (cycle_seconds + 1)) * 100 / cycle_seconds))
-    local filled=$((progress_percent * bar_width / 100))
-    local empty=$((bar_width - filled))
-    local bar_filled bar_empty
+    local frame
+    case $((elapsed % 4)) in
+      0) frame='|' ;;
+      1) frame='/' ;;
+      2) frame='-' ;;
+      3) frame="\\" ;;
+    esac
 
-    bar_filled="$(printf '%*s' "$filled" '' | tr ' ' '#')"
-    bar_empty="$(printf '%*s' "$empty" '' | tr ' ' '-')"
-
-    printf '\r[status %s] Still initializing ostree layout [%s%s] %3d%% %ss elapsed' \
-      "$(date '+%H:%M:%S')" "$bar_filled" "$bar_empty" "$progress_percent" "$elapsed"
+    printf '\r[status %s] Still initializing ostree layout %s %ss elapsed' \
+      "$(date '+%H:%M:%S')" "$frame" "$elapsed"
     progress_line_active=1
   }
 
@@ -200,7 +198,7 @@ run_builder_with_status_stream() {
       local now elapsed
       now="$(date +%s)"
       elapsed=$((now - ostree_started_at))
-      render_ostree_progress_line "$elapsed"
+      render_ostree_spinner_line "$elapsed"
     fi
   done
 
@@ -292,7 +290,7 @@ configure_rpi_native_boot() {
     fi
   done
 
-  echo "Configuring Raspberry Pi native boot artifacts (firmware + U-Boot + extlinux)..."
+  echo "Configuring Raspberry Pi native boot artifacts (firmware + direct kernel boot)..."
 
   loopdev="$(sudo losetup --find --show -P "$raw_img")"
   efi_mnt="$(mktemp -d)"
@@ -313,13 +311,13 @@ configure_rpi_native_boot() {
 
   local start4_elf=""
   local fixup4_dat=""
-  local uboot_bin=""
+  local pi_dtb=""
 
   start4_elf="$(sudo find "$deploy_root" -type f -name 'start4.elf' 2>/dev/null | head -n1 || true)"
   fixup4_dat="$(sudo find "$deploy_root" -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
-  uboot_bin="$(sudo find "$deploy_root" -type f -name 'u-boot.bin' 2>/dev/null | grep -E 'rpi|aarch64|arm' | head -n1 || true)"
-  if [[ -z "$uboot_bin" ]]; then
-    uboot_bin="$(sudo find "$deploy_root" -type f -name 'u-boot.bin' 2>/dev/null | head -n1 || true)"
+  pi_dtb="$(sudo find "$deploy_root" -type f -name 'bcm2711-rpi-4-b.dtb' 2>/dev/null | head -n1 || true)"
+  if [[ -z "$pi_dtb" ]]; then
+    pi_dtb="$(sudo find "$deploy_root" -type f -name 'bcm2711-rpi-4-*.dtb' 2>/dev/null | head -n1 || true)"
   fi
 
   if [[ -z "$start4_elf" ]]; then
@@ -328,11 +326,11 @@ configure_rpi_native_boot() {
   if [[ -z "$fixup4_dat" ]]; then
     fixup4_dat="$(find /usr/share /usr/lib/firmware -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
   fi
-  if [[ -z "$uboot_bin" ]]; then
-    uboot_bin="$(find /usr/share /usr/lib -type f -name 'u-boot.bin' 2>/dev/null | grep -E 'rpi|aarch64|arm' | head -n1 || true)"
+  if [[ -z "$pi_dtb" ]]; then
+    pi_dtb="$(find /usr/share /usr/lib /usr/lib/firmware -type f -name 'bcm2711-rpi-4-b.dtb' 2>/dev/null | head -n1 || true)"
   fi
-  if [[ -z "$uboot_bin" ]]; then
-    uboot_bin="$(find /usr/share /usr/lib -type f -name 'u-boot.bin' 2>/dev/null | head -n1 || true)"
+  if [[ -z "$pi_dtb" ]]; then
+    pi_dtb="$(find /usr/share /usr/lib /usr/lib/firmware -type f -name 'bcm2711-rpi-4-*.dtb' 2>/dev/null | head -n1 || true)"
   fi
 
   if [[ -z "$start4_elf" || -z "$fixup4_dat" ]]; then
@@ -341,15 +339,20 @@ configure_rpi_native_boot() {
     exit 1
   fi
 
-  if [[ -z "$uboot_bin" ]]; then
-    echo "ERROR: Could not locate u-boot.bin in deployment or host." >&2
-    echo "Install U-Boot package(s), e.g.: sudo dnf install -y uboot-images-armv8" >&2
+  if [[ -z "$pi_dtb" ]]; then
+    echo "ERROR: Could not locate Raspberry Pi DTB (bcm2711-rpi-4-*.dtb) in deployment or host." >&2
+    echo "Install firmware package(s), e.g.: sudo dnf install -y bcm283x-firmware" >&2
     exit 1
   fi
 
+  local pi_dtb_name=""
+  pi_dtb_name="$(basename "$pi_dtb")"
+
+  echo "Using Raspberry Pi DTB: $pi_dtb"
+
   sudo cp -f "$start4_elf" "$efi_mnt/start4.elf"
   sudo cp -f "$fixup4_dat" "$efi_mnt/fixup4.dat"
-  sudo cp -f "$uboot_bin" "$efi_mnt/u-boot.bin"
+  sudo cp -f "$pi_dtb" "$efi_mnt/$pi_dtb_name"
 
   local bls_entry=""
   bls_entry="$(sudo find "$boot_mnt/loader/entries" -maxdepth 1 -type f -name '*.conf' | sort | tail -n1)"
@@ -361,6 +364,7 @@ configure_rpi_native_boot() {
   local linux_path=""
   local initrd_path=""
   local options_line=""
+  local options_sanitized=""
 
   linux_path="$(sudo awk '/^linux[[:space:]]+/ {print $2; exit}' "$bls_entry")"
   initrd_path="$(sudo awk '/^initrd[[:space:]]+/ {print $2; exit}' "$bls_entry")"
@@ -371,25 +375,40 @@ configure_rpi_native_boot() {
     exit 1
   fi
 
-  sudo cp -f "$boot_mnt$linux_path" "$efi_mnt/vmlinuz"
-  sudo cp -f "$boot_mnt$initrd_path" "$efi_mnt/initramfs.img"
+  options_sanitized="$(echo "$options_line" | sed -E \
+    -e 's/(^|[[:space:]])rhgb([[:space:]]|$)/ /g' \
+    -e 's/(^|[[:space:]])quiet([[:space:]]|$)/ /g' \
+    -e 's/(^|[[:space:]])console=[^[:space:]]+//g' \
+    -e 's/[[:space:]]+/ /g' \
+    -e 's/^ //; s/ $//')"
 
-  sudo mkdir -p "$efi_mnt/extlinux"
-  sudo tee "$efi_mnt/extlinux/extlinux.conf" >/dev/null <<EOF
-DEFAULT fedora
-TIMEOUT 10
+  options_line="$options_sanitized console=ttyS0,115200n8 console=tty1 consoleblank=0 loglevel=7 nomodeset plymouth.enable=0 rd.plymouth=0 systemd.show_status=1 rd.systemd.show_status=1"
 
-LABEL fedora
-  KERNEL /vmlinuz
-  INITRD /initramfs.img
-  APPEND $options_line
+  sudo cp -f "$boot_mnt$linux_path" "$efi_mnt/kernel8.img"
+  sudo cp -f "$boot_mnt$initrd_path" "$efi_mnt/initramfs8.img"
+
+  sudo tee "$efi_mnt/cmdline.txt" >/dev/null <<EOF
+$options_line
 EOF
 
-  sudo tee "$efi_mnt/config.txt" >/dev/null <<'EOF'
+  sudo tee "$efi_mnt/config.txt" >/dev/null <<EOF
 arm_64bit=1
 enable_uart=1
+hdmi_force_hotplug=1
+hdmi_force_hotplug:0=1
+hdmi_force_hotplug:1=1
+hdmi_safe=1
+hdmi_group=2
+hdmi_mode=82
+hdmi_group:0=2
+hdmi_mode:0=82
+hdmi_group:1=2
+hdmi_mode:1=82
+disable_overscan=1
 os_check=0
-kernel=u-boot.bin
+kernel=kernel8.img
+device_tree=$pi_dtb_name
+initramfs initramfs8.img followkernel
 EOF
 
   sudo sync

@@ -5,7 +5,7 @@ ENV_FILE="/etc/atomtap/forward.env"
 FIRSTBOOT_ENV_FILE="/etc/atomtap/firstboot.env"
 STATE_DIR="/var/lib/atomtap"
 DONE_FILE="${STATE_DIR}/firstboot.done"
-TTY_DEV="/dev/console"
+TTY_DEV="/dev/tty1"
 
 FIRSTBOOT_TIMEOUT_SEC=0
 FIRSTBOOT_ON_TIMEOUT="reboot"
@@ -26,6 +26,10 @@ mkdir -p "$STATE_DIR"
 
 if [[ -f "$DONE_FILE" ]]; then
   exit 0
+fi
+
+if [[ ! -e "$TTY_DEV" ]]; then
+  TTY_DEV="/dev/console"
 fi
 
 exec <"$TTY_DEV" >"$TTY_DEV" 2>"$TTY_DEV"
