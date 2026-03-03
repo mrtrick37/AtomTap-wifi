@@ -72,17 +72,17 @@ to the first FAT partition.
 
 ## Runtime configuration on the Pi
 
-1. Set `COLLECTOR_IP` in `/etc/atomtap/forward.env` (required for forwarding).
-2. On first boot, the system **creates a default local admin** and opens a curses setup menu on the active console (`/dev/console`, e.g. `tty1` or serial):
+1. On first boot, the system **creates a default local admin** and opens a curses setup menu on the active console (`/dev/console`, e.g. `tty1` or serial):
 	- admin username (defaults to `atomtap`)
 	- admin password
 	- Wi-Fi SSID
 	- Wi-Fi PSK
+	- collector destination IP (`COLLECTOR_IP`)
 	- whether `wlan0` uses DHCP or static IPv4
 	- if static: IPv4 address, subnet mask, and gateway
-3. After setup completes, the device reboots automatically.
-4. After reboot, `atomtap-forward.service` starts automatically.
-5. Verify status:
+2. After setup completes, the device reboots automatically.
+3. After reboot, `atomtap-forward.service` starts automatically.
+4. Verify status:
 
 	```bash
 	sudo systemctl status atomtap-forward.service
@@ -100,10 +100,9 @@ and capture traffic from that VXLAN interface.
 - service prints boot-time guidance to open the active console for setup
 - it creates/updates the default admin user from `/etc/atomtap/firstboot.env`
 - it opens a curses (`whiptail`/`dialog`) setup menu on the active console (`tty1` or serial)
-- menu collects admin username/password, Wi-Fi SSID/PSK, and DHCP/static selection for `wlan0`
+- menu collects admin username/password, Wi-Fi SSID/PSK, collector IP, and DHCP/static selection for `wlan0`
 - if static mode is selected, menu requires IPv4 address, subnet mask, and gateway
 - it creates/updates the user account and writes config values to `/etc/atomtap/forward.env`
-- `COLLECTOR_IP` is not prompted and must be preconfigured in `/etc/atomtap/forward.env`
 - it applies Wi-Fi credentials and DHCP/static IPv4 configuration to `wlan0` via NetworkManager
 - it writes `/var/lib/atomtap/firstboot.done`
 - `atomtap-forward.service` is gated by that file and will not run before setup is complete
@@ -116,7 +115,7 @@ If setup is interrupted, reboot and complete the prompts; forwarding remains blo
 1. Boot reaches first-boot setup service.
 2. Default admin user is ensured from `/etc/atomtap/firstboot.env`.
 3. Curses setup menu is displayed on the active console (`tty1` or serial).
-4. Menu prompts for username, password, SSID, PSK, and DHCP/static mode (`wlan0`).
+4. Menu prompts for username, password, SSID, PSK, collector IP, and DHCP/static mode (`wlan0`).
 5. If static is selected, menu requires IPv4 address, subnet mask, and gateway.
 6. Setup applies `wlan0` config and writes `/var/lib/atomtap/firstboot.done`.
 7. Device reboots.

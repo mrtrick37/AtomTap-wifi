@@ -242,6 +242,23 @@ prompt_wlan_ssid() {
   done
 }
 
+prompt_collector_ip() {
+  local ip="$1"
+
+  while true; do
+    if ! ui_input "Collector destination IPv4 address" "$ip" ip; then
+      return 1
+    fi
+
+    if valid_ipv4 "$ip"; then
+      printf '%s' "$ip"
+      return 0
+    fi
+
+    ui_msg "Invalid IPv4 address."
+  done
+}
+
 prompt_wlan_psk() {
   local pass1 pass2
 
@@ -474,6 +491,7 @@ ADMIN_USERNAME="${DEFAULT_ADMIN_USER}"
 ADMIN_PASSWORD=""
 WLAN_SSID="${WLAN_SSID:-}"
 WLAN_PSK="${WLAN_PSK:-}"
+COLLECTOR_IP="${COLLECTOR_IP:-}"
 WLAN_IPV4_MODE="${WLAN_IPV4_MODE:-dhcp}"
 WLAN_IPV4_ADDRESS="${WLAN_IPV4_ADDRESS:-}"
 WLAN_IPV4_SUBNET="${WLAN_IPV4_SUBNET:-}"
@@ -493,6 +511,10 @@ if ! WLAN_SSID="$(prompt_wlan_ssid "$WLAN_SSID")"; then
 fi
 
 if ! WLAN_PSK="$(prompt_wlan_psk)"; then
+  exit 1
+fi
+
+if ! COLLECTOR_IP="$(prompt_collector_ip "$COLLECTOR_IP")"; then
   exit 1
 fi
 
@@ -522,7 +544,7 @@ else
   WLAN_IPV4_GATEWAY=""
 fi
 
-SUMMARY_MSG="Apply settings and reboot?\n\nAdmin user: ${ADMIN_USERNAME}\nWi-Fi SSID: ${WLAN_SSID}\n${WIFI_IFACE} IPv4 mode: ${WLAN_IPV4_MODE}"
+SUMMARY_MSG="Apply settings and reboot?\n\nAdmin user: ${ADMIN_USERNAME}\nWi-Fi SSID: ${WLAN_SSID}\nCollector IP: ${COLLECTOR_IP}\n${WIFI_IFACE} IPv4 mode: ${WLAN_IPV4_MODE}"
 if [[ "$WLAN_IPV4_MODE" == "static" ]]; then
   SUMMARY_MSG+="\n${WIFI_IFACE} static IP: ${WLAN_IPV4_ADDRESS}\n${WIFI_IFACE} subnet: ${WLAN_IPV4_SUBNET}\n${WIFI_IFACE} gateway: ${WLAN_IPV4_GATEWAY}"
 fi
@@ -550,6 +572,7 @@ fi
 
 set_env_value "$ENV_FILE" "WLAN_SSID" "$WLAN_SSID"
 set_env_value "$ENV_FILE" "WLAN_PSK" "$WLAN_PSK"
+set_env_value "$ENV_FILE" "COLLECTOR_IP" "$COLLECTOR_IP"
 set_env_value "$ENV_FILE" "WLAN_IPV4_MODE" "$WLAN_IPV4_MODE"
 set_env_value "$ENV_FILE" "WLAN_IPV4_ADDRESS" "$WLAN_IPV4_ADDRESS"
 set_env_value "$ENV_FILE" "WLAN_IPV4_SUBNET" "$WLAN_IPV4_SUBNET"
