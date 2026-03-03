@@ -49,6 +49,7 @@ Behavior:
 - generates a raw disk image under `scripts/output/` by default
 - uses `ext4` for root filesystem
 - always minimizes `disk.raw` size after build by shrinking ext4 filesystems and truncating the image
+- configures partition 1 as a Raspberry Pi native boot FAT with Pi firmware + `u-boot.bin` + `extlinux.conf`
 
 Optional environment controls:
 
@@ -62,6 +63,10 @@ ROOT_HEADROOM_MIB=256 BOOT_HEADROOM_MIB=64 sudo bash scripts/build-rpi-raw.sh
 
 - `ROOT_HEADROOM_MIB` (default `256`): extra free space kept in root partition after minimization
 - `BOOT_HEADROOM_MIB` (default `64`): extra free space kept in boot partition after minimization
+
+Note: the script now performs post-build Pi-native boot setup by extracting `start4.elf`,
+`fixup4.dat`, and `u-boot.bin` from the built deployment and writing boot config files
+to the first FAT partition.
 
 ## Runtime configuration on the Pi
 

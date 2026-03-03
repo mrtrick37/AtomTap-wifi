@@ -120,6 +120,126 @@ ceil_div() {
   echo $(((num + den - 1) / den))
 }
 
+configure_rpi_native_boot() {
+  local raw_img="$1"
+  local loopdev=""
+  local efi_mnt=""
+  local boot_mnt=""
+  local root_mnt=""
+  local cleanup_needed=0
+
+  if [[ ! -f "$raw_img" ]]; then
+    return 0
+  fi
+
+  for cmd in losetup mount umount find awk sed blkid mkdir cp; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "ERROR: Required command '$cmd' not found for Pi-native boot setup." >&2
+      exit 1
+    fi
+  done
+
+  echo "Configuring Raspberry Pi native boot artifacts (firmware + U-Boot + extlinux)..."
+
+  loopdev="$(sudo losetup --find --show -P "$raw_img")"
+  efi_mnt="$(mktemp -d)"
+  boot_mnt="$(mktemp -d)"
+  root_mnt="$(mktemp -d)"
+  cleanup_needed=1
+
+  sudo mount "${loopdev}p1" "$efi_mnt"
+  sudo mount "${loopdev}p2" "$boot_mnt"
+  sudo mount "${loopdev}p3" "$root_mnt"
+
+  local deploy_root=""
+  deploy_root="$(sudo find "$root_mnt/ostree/deploy" -maxdepth 4 -type d -name '*.0' | sort | tail -n1)"
+  if [[ -z "$deploy_root" ]]; then
+    echo "ERROR: Could not locate ostree deployment in root partition for Pi boot setup." >&2
+    exit 1
+  fi
+
+  local firmware_dir=""
+  firmware_dir="$(sudo find "$deploy_root/usr/share" -maxdepth 4 -type f -name 'start4.elf' -printf '%h\n' 2>/dev/null | head -n1)"
+  if [[ -z "$firmware_dir" ]]; then
+    echo "ERROR: Could not locate Raspberry Pi firmware (start4.elf) in deployment." >&2
+    exit 1
+  fi
+
+  local uboot_bin=""
+  uboot_bin="$(sudo find "$deploy_root/usr/share" -maxdepth 6 -type f -name 'u-boot.bin' 2>/dev/null | grep -E 'rpi|arm' | head -n1 || true)"
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(sudo find "$deploy_root/usr/share" -maxdepth 6 -type f -name 'u-boot.bin' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    echo "ERROR: Could not locate u-boot.bin in deployment." >&2
+    exit 1
+  fi
+
+  sudo cp -f "$firmware_dir/start4.elf" "$efi_mnt/start4.elf"
+  sudo cp -f "$firmware_dir/fixup4.dat" "$efi_mnt/fixup4.dat"
+  sudo cp -f "$uboot_bin" "$efi_mnt/u-boot.bin"
+
+  local bls_entry=""
+  bls_entry="$(sudo find "$boot_mnt/loader/entries" -maxdepth 1 -type f -name '*.conf' | sort | tail -n1)"
+  if [[ -z "$bls_entry" ]]; then
+    echo "ERROR: Could not locate BLS entry in boot partition." >&2
+    exit 1
+  fi
+
+  local linux_path=""
+  local initrd_path=""
+  local options_line=""
+
+  linux_path="$(sudo awk '/^linux[[:space:]]+/ {print $2; exit}' "$bls_entry")"
+  initrd_path="$(sudo awk '/^initrd[[:space:]]+/ {print $2; exit}' "$bls_entry")"
+  options_line="$(sudo sed -n 's/^options[[:space:]]\+//p' "$bls_entry" | head -n1)"
+
+  if [[ -z "$linux_path" || -z "$initrd_path" || -z "$options_line" ]]; then
+    echo "ERROR: Failed to parse linux/initrd/options from BLS entry: $bls_entry" >&2
+    exit 1
+  fi
+
+  sudo cp -f "$boot_mnt$linux_path" "$efi_mnt/vmlinuz"
+  sudo cp -f "$boot_mnt$initrd_path" "$efi_mnt/initramfs.img"
+
+  sudo mkdir -p "$efi_mnt/extlinux"
+  sudo tee "$efi_mnt/extlinux/extlinux.conf" >/dev/null <<EOF
+DEFAULT fedora
+TIMEOUT 10
+
+LABEL fedora
+  KERNEL /vmlinuz
+  INITRD /initramfs.img
+  APPEND $options_line
+EOF
+
+  sudo tee "$efi_mnt/config.txt" >/dev/null <<'EOF'
+arm_64bit=1
+enable_uart=1
+kernel=u-boot.bin
+EOF
+
+  sudo sync
+  sudo umount "$efi_mnt"
+  sudo umount "$boot_mnt"
+  sudo umount "$root_mnt"
+  sudo rmdir "$efi_mnt" "$boot_mnt" "$root_mnt"
+  sudo losetup -d "$loopdev"
+  cleanup_needed=0
+
+  echo "Pi-native boot assets written to partition 1 (FAT)."
+
+  if (( cleanup_needed == 1 )); then
+    [[ -n "$efi_mnt" ]] && sudo umount "$efi_mnt" 2>/dev/null || true
+    [[ -n "$boot_mnt" ]] && sudo umount "$boot_mnt" 2>/dev/null || true
+    [[ -n "$root_mnt" ]] && sudo umount "$root_mnt" 2>/dev/null || true
+    [[ -n "$efi_mnt" ]] && sudo rmdir "$efi_mnt" 2>/dev/null || true
+    [[ -n "$boot_mnt" ]] && sudo rmdir "$boot_mnt" 2>/dev/null || true
+    [[ -n "$root_mnt" ]] && sudo rmdir "$root_mnt" 2>/dev/null || true
+    [[ -n "$loopdev" ]] && sudo losetup -d "$loopdev" 2>/dev/null || true
+  fi
+}
+
 minimize_raw_image() {
   local raw_img="$1"
   local loopdev=""
@@ -259,4 +379,5 @@ if [[ -f "$RAW_CANDIDATE" ]]; then
   echo "Raw image: $RAW_CANDIDATE"
 
   minimize_raw_image "$RAW_CANDIDATE"
+  configure_rpi_native_boot "$RAW_CANDIDATE"
 fi
