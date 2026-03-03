@@ -290,7 +290,7 @@ configure_rpi_native_boot() {
     fi
   done
 
-  echo "Configuring Raspberry Pi native boot artifacts (firmware + direct kernel boot)..."
+  echo "Configuring Raspberry Pi native boot artifacts (firmware + U-Boot + extlinux)..."
 
   loopdev="$(sudo losetup --find --show -P "$raw_img")"
   efi_mnt="$(mktemp -d)"
@@ -311,13 +311,23 @@ configure_rpi_native_boot() {
 
   local start4_elf=""
   local fixup4_dat=""
-  local pi_dtb=""
+  local uboot_bin=""
 
   start4_elf="$(sudo find "$deploy_root" -type f -name 'start4.elf' 2>/dev/null | head -n1 || true)"
   fixup4_dat="$(sudo find "$deploy_root" -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
-  pi_dtb="$(sudo find "$deploy_root" -type f -name 'bcm2711-rpi-4-b.dtb' 2>/dev/null | head -n1 || true)"
-  if [[ -z "$pi_dtb" ]]; then
-    pi_dtb="$(sudo find "$deploy_root" -type f -name 'bcm2711-rpi-4-*.dtb' 2>/dev/null | head -n1 || true)"
+  if [[ -r /usr/share/uboot/rpi_4/u-boot.bin ]]; then
+    uboot_bin="/usr/share/uboot/rpi_4/u-boot.bin"
+  elif [[ -r /usr/lib/uboot/rpi_4/u-boot.bin ]]; then
+    uboot_bin="/usr/lib/uboot/rpi_4/u-boot.bin"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(sudo find "$deploy_root" -type f -path '*/uboot/rpi_4/u-boot.bin' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(sudo find "$deploy_root" -type f -path '*/uboot/rpi_arm64/u-boot.bin' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(sudo find "$deploy_root" -type f -path '*/uboot/rpi*/u-boot.bin' 2>/dev/null | head -n1 || true)"
   fi
 
   if [[ -z "$start4_elf" ]]; then
@@ -326,11 +336,14 @@ configure_rpi_native_boot() {
   if [[ -z "$fixup4_dat" ]]; then
     fixup4_dat="$(find /usr/share /usr/lib/firmware -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
   fi
-  if [[ -z "$pi_dtb" ]]; then
-    pi_dtb="$(find /usr/share /usr/lib /usr/lib/firmware -type f -name 'bcm2711-rpi-4-b.dtb' 2>/dev/null | head -n1 || true)"
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(find /usr/share /usr/lib -type f -path '*/uboot/rpi_4/u-boot.bin' 2>/dev/null | head -n1 || true)"
   fi
-  if [[ -z "$pi_dtb" ]]; then
-    pi_dtb="$(find /usr/share /usr/lib /usr/lib/firmware -type f -name 'bcm2711-rpi-4-*.dtb' 2>/dev/null | head -n1 || true)"
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(find /usr/share /usr/lib -type f -path '*/uboot/rpi_arm64/u-boot.bin' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(find /usr/share /usr/lib -type f -path '*/uboot/rpi*/u-boot.bin' 2>/dev/null | head -n1 || true)"
   fi
 
   if [[ -z "$start4_elf" || -z "$fixup4_dat" ]]; then
@@ -339,20 +352,30 @@ configure_rpi_native_boot() {
     exit 1
   fi
 
-  if [[ -z "$pi_dtb" ]]; then
-    echo "ERROR: Could not locate Raspberry Pi DTB (bcm2711-rpi-4-*.dtb) in deployment or host." >&2
-    echo "Install firmware package(s), e.g.: sudo dnf install -y bcm283x-firmware" >&2
+  if [[ -z "$uboot_bin" ]]; then
+    echo "ERROR: Could not locate u-boot.bin in deployment or host." >&2
+    echo "Install U-Boot package(s), e.g.: sudo dnf install -y uboot-images-armv8" >&2
     exit 1
   fi
 
-  local pi_dtb_name=""
-  pi_dtb_name="$(basename "$pi_dtb")"
-
-  echo "Using Raspberry Pi DTB: $pi_dtb"
+  echo "Using U-Boot binary: $uboot_bin"
 
   sudo cp -f "$start4_elf" "$efi_mnt/start4.elf"
   sudo cp -f "$fixup4_dat" "$efi_mnt/fixup4.dat"
-  sudo cp -f "$pi_dtb" "$efi_mnt/$pi_dtb_name"
+  sudo cp -f "$uboot_bin" "$efi_mnt/u-boot.bin"
+
+  local uboot_dir=""
+  uboot_dir="$(dirname "$uboot_bin")"
+  if compgen -G "$uboot_dir"'/bcm27*.dtb' >/dev/null 2>&1; then
+    echo "Staging DTBs from: $uboot_dir"
+    sudo cp -f "$uboot_dir"/bcm27*.dtb "$efi_mnt/" || true
+  fi
+
+  local deployment_dtbs=""
+  deployment_dtbs="$(dirname "$deploy_root")"
+  if sudo find "$deploy_root/usr/lib/modules" -type f -path '*/dtb/broadcom/bcm27*.dtb' | head -n1 >/dev/null 2>&1; then
+    sudo find "$deploy_root/usr/lib/modules" -type f -path '*/dtb/broadcom/bcm27*.dtb' -exec cp -f {} "$efi_mnt/" \; || true
+  fi
 
   local bls_entry=""
   bls_entry="$(sudo find "$boot_mnt/loader/entries" -maxdepth 1 -type f -name '*.conf' | sort | tail -n1)"
@@ -384,11 +407,19 @@ configure_rpi_native_boot() {
 
   options_line="$options_sanitized console=ttyS0,115200n8 console=tty1 consoleblank=0 loglevel=7 nomodeset plymouth.enable=0 rd.plymouth=0 systemd.show_status=1 rd.systemd.show_status=1"
 
-  sudo cp -f "$boot_mnt$linux_path" "$efi_mnt/kernel8.img"
-  sudo cp -f "$boot_mnt$initrd_path" "$efi_mnt/initramfs8.img"
+  sudo cp -f "$boot_mnt$linux_path" "$efi_mnt/vmlinuz"
+  sudo cp -f "$boot_mnt$initrd_path" "$efi_mnt/initramfs.img"
 
-  sudo tee "$efi_mnt/cmdline.txt" >/dev/null <<EOF
-$options_line
+  sudo mkdir -p "$efi_mnt/extlinux"
+  sudo tee "$efi_mnt/extlinux/extlinux.conf" >/dev/null <<EOF
+DEFAULT fedora
+TIMEOUT 10
+
+LABEL fedora
+  KERNEL /vmlinuz
+  INITRD /initramfs.img
+  FDTDIR /
+  APPEND $options_line
 EOF
 
   sudo tee "$efi_mnt/config.txt" >/dev/null <<EOF
@@ -406,9 +437,7 @@ hdmi_group:1=2
 hdmi_mode:1=82
 disable_overscan=1
 os_check=0
-kernel=kernel8.img
-device_tree=$pi_dtb_name
-initramfs initramfs8.img followkernel
+kernel=u-boot.bin
 EOF
 
   sudo sync

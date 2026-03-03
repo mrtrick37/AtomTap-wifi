@@ -14,7 +14,8 @@ Fedora IoT bootc image assets for a Raspberry Pi passive OT tap:
 - `overlay/usr/lib/systemd/system/atomtap-firstboot-setup.service`
 - `overlay/etc/atomtap/forward.env`
 - `overlay/etc/atomtap/firstboot.env`
-- `overlay/usr/lib/tmpfiles.d/atomtap.conf`
+- `overlay/etc/systemd/system/multi-user.target.wants/atomtap-forward.service`
+- `overlay/etc/systemd/system/multi-user.target.wants/atomtap-firstboot-setup.service`
 
 ## How it works
 
@@ -71,15 +72,17 @@ to the first FAT partition.
 
 ## Runtime configuration on the Pi
 
-1. Configure Wi-Fi so `wlan0` has connectivity to your collector.
-2. On first boot, the system **requires interactive setup** on console (`/dev/console`):
-	- username
-	- password
-	- collector destination IP (`COLLECTOR_IP`)
-	- Wi-Fi IPv4 address/CIDR for `wlan0` (required)
-	- Wi-Fi IPv4 gateway (optional)
-3. After setup completes, `atomtap-forward.service` starts automatically.
-4. Verify status:
+1. Set `COLLECTOR_IP` in `/etc/atomtap/forward.env` (required for forwarding).
+2. On first boot, the system **creates a default local admin** and opens a curses setup menu on the active console (`/dev/console`, e.g. `tty1` or serial):
+	- admin username (defaults to `atomtap`)
+	- admin password
+	- Wi-Fi SSID
+	- Wi-Fi PSK
+	- whether `wlan0` uses DHCP or static IPv4
+	- if static: IPv4 address, subnet mask, and gateway
+3. After setup completes, the device reboots automatically.
+4. After reboot, `atomtap-forward.service` starts automatically.
+5. Verify status:
 
 	```bash
 	sudo systemctl status atomtap-forward.service
@@ -93,26 +96,31 @@ and capture traffic from that VXLAN interface.
 
 ## First-boot requirement behavior
 
-- `atomtap-firstboot-setup.service` runs before `multi-user.target`
-- console banner shown at boot:
-	- `AtomTap setup required: complete username/password/collector IP on console to continue.`
-- `Wi-Fi IPv4 address/CIDR is also required and will be applied to wlan0 via NetworkManager.`
-- it prompts for username, password, destination IP, and `wlan0` IPv4 configuration
+- `atomtap-firstboot-setup.service` runs on first boot in `multi-user.target` on the active console (`/dev/console`)
+- service prints boot-time guidance to open the active console for setup
+- it creates/updates the default admin user from `/etc/atomtap/firstboot.env`
+- it opens a curses (`whiptail`/`dialog`) setup menu on the active console (`tty1` or serial)
+- menu collects admin username/password, Wi-Fi SSID/PSK, and DHCP/static selection for `wlan0`
+- if static mode is selected, menu requires IPv4 address, subnet mask, and gateway
 - it creates/updates the user account and writes config values to `/etc/atomtap/forward.env`
-- it applies static IPv4 configuration to `wlan0` via NetworkManager
+- `COLLECTOR_IP` is not prompted and must be preconfigured in `/etc/atomtap/forward.env`
+- it applies Wi-Fi credentials and DHCP/static IPv4 configuration to `wlan0` via NetworkManager
 - it writes `/var/lib/atomtap/firstboot.done`
 - `atomtap-forward.service` is gated by that file and will not run before setup is complete
+- it reboots after successful setup
 
 If setup is interrupted, reboot and complete the prompts; forwarding remains blocked until done.
 
 ### Expected boot sequence
 
 1. Boot reaches first-boot setup service.
-2. Console banner is displayed.
-3. Prompts require username, password, and collector destination IP.
-4. Prompts require `wlan0` IPv4 address/CIDR (and optional gateway).
-5. Setup applies `wlan0` IPv4 config and writes `/var/lib/atomtap/firstboot.done`.
-6. Forwarding service starts and configures VXLAN + `tc` mirror rules.
+2. Default admin user is ensured from `/etc/atomtap/firstboot.env`.
+3. Curses setup menu is displayed on the active console (`tty1` or serial).
+4. Menu prompts for username, password, SSID, PSK, and DHCP/static mode (`wlan0`).
+5. If static is selected, menu requires IPv4 address, subnet mask, and gateway.
+6. Setup applies `wlan0` config and writes `/var/lib/atomtap/firstboot.done`.
+7. Device reboots.
+8. Forwarding service starts and configures VXLAN + `tc` mirror rules.
 
 ## Optional headless timeout / fallback mode
 
@@ -130,6 +138,13 @@ Example unattended-safe setting:
 ```bash
 FIRSTBOOT_TIMEOUT_SEC=300
 FIRSTBOOT_ON_TIMEOUT=reboot
+```
+
+Default bootstrap admin credentials (change as needed):
+
+```bash
+DEFAULT_ADMIN_USER=atomtap
+DEFAULT_ADMIN_PASSWORD=atomtap
 ```
 
 With this configuration, the device reboots if setup is not completed within
@@ -211,10 +226,10 @@ Run these on the Pi after first boot:
 	ip route
 	```
 
-3. Confirm tap config has collector IP set:
+3. Confirm first-boot network config values are set:
 
 	```bash
-	grep -E '^(ETH_IFACE|WIFI_IFACE|COLLECTOR_IP|WLAN_IPV4_CIDR|WLAN_IPV4_GATEWAY|VXLAN_ID|VXLAN_PORT)=' /etc/atomtap/forward.env
+	grep -E '^(ETH_IFACE|WIFI_IFACE|COLLECTOR_IP|WLAN_SSID|WLAN_IPV4_MODE|WLAN_IPV4_ADDRESS|WLAN_IPV4_SUBNET|WLAN_IPV4_CIDR|WLAN_IPV4_GATEWAY|VXLAN_ID|VXLAN_PORT)=' /etc/atomtap/forward.env
 	```
 
 4. Confirm `wlan0` got the configured address:
