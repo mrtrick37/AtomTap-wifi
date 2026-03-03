@@ -11,6 +11,25 @@ ROOTFS="ext4"
 ROOT_HEADROOM_MIB="${ROOT_HEADROOM_MIB:-256}"
 BOOT_HEADROOM_MIB="${BOOT_HEADROOM_MIB:-64}"
 
+print_build_identity() {
+  local script_hash="unknown"
+  local git_commit="unknown"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    script_hash="$(sha256sum "$0" | awk '{print $1}')"
+  fi
+
+  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git_commit="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)"
+  fi
+
+  echo "Build script: $0"
+  echo "Repo root: $REPO_ROOT"
+  echo "Git commit: $git_commit"
+  echo "Script sha256: $script_hash"
+  echo "Output mode: raw-only (compression disabled)"
+}
+
 require_arm64_binfmt() {
   local host_arch
   host_arch="$(uname -m)"
@@ -45,6 +64,13 @@ EOF
 
 mkdir -p "$OUTPUT_DIR"
 require_arm64_binfmt
+print_build_identity
+
+RAW_XZ_CANDIDATE="$OUTPUT_DIR/image/disk.raw.xz"
+if [[ -f "$RAW_XZ_CANDIDATE" ]]; then
+  echo "Removing stale compressed artifact from previous runs: $RAW_XZ_CANDIDATE"
+  rm -f "$RAW_XZ_CANDIDATE"
+fi
 
 echo "[1/4] Building arm64 bootc container image: $IMAGE_NAME"
 podman build --platform linux/arm64 -f "$REPO_ROOT/Containerfile.rpi" -t "$IMAGE_NAME" "$REPO_ROOT"
