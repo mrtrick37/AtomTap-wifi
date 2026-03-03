@@ -78,6 +78,71 @@ sudo podman load -i "$OCI_ARCHIVE"
 echo "[4/4] Building raw disk image in: $OUTPUT_DIR"
 echo "Using rootfs: $ROOTFS"
 
+run_builder_with_status_stream() {
+  local cmd=("$@")
+  local in_ostree_layout=0
+  local ostree_started_at=0
+  local last_heartbeat_at=0
+
+  process_builder_line() {
+    local line="$1"
+    local now
+
+    echo "$line"
+
+    if [[ "$line" == *"Initializing ostree layout"* ]]; then
+      now="$(date +%s)"
+      in_ostree_layout=1
+      ostree_started_at="$now"
+      last_heartbeat_at="$now"
+      echo "[status $(date '+%H:%M:%S')] Entered ostree initialization; this can take a few minutes."
+      return
+    fi
+
+    if (( in_ostree_layout == 1 )) && [[ "$line" == *"Deploying container image...done"* || "$line" == *"Installation complete!"* ]]; then
+      now="$(date +%s)"
+      echo "[status $(date '+%H:%M:%S')] Ostree initialization completed after $((now - ostree_started_at))s."
+      in_ostree_layout=0
+    fi
+  }
+
+  coproc BUILDER_STREAM { "${cmd[@]}" 2>&1; }
+  local builder_pid="$COPROC_PID"
+  local builder_fd
+  exec {builder_fd}<&"${BUILDER_STREAM[0]}"
+
+  while true; do
+    local line=""
+
+    if IFS= read -r -t 5 line <&"$builder_fd"; then
+      process_builder_line "$line"
+      continue
+    fi
+
+    if ! kill -0 "$builder_pid" 2>/dev/null; then
+      while IFS= read -r line <&"$builder_fd"; do
+        process_builder_line "$line"
+      done
+      break
+    fi
+
+    if (( in_ostree_layout == 1 )); then
+      local now elapsed
+      now="$(date +%s)"
+      elapsed=$((now - ostree_started_at))
+      if (( now - last_heartbeat_at >= 20 )); then
+        echo "[status $(date '+%H:%M:%S')] Still initializing ostree layout (${elapsed}s elapsed)..."
+        last_heartbeat_at="$now"
+      fi
+    fi
+  done
+
+  wait "$builder_pid"
+  local rc=$?
+  exec {builder_fd}<&-
+  return "$rc"
+}
+
 run_builder() {
   local rootfs="$1"
   shift
@@ -94,9 +159,10 @@ run_builder() {
     podman_args+=(--device /dev/kvm:/dev/kvm)
   fi
 
-  sudo podman run "${podman_args[@]}" \
-    quay.io/centos-bootc/bootc-image-builder:latest \
-    build --type raw --target-arch arm64 --rootfs "$rootfs" --output /output "${extra_args[@]}" "$IMAGE_NAME"
+  run_builder_with_status_stream \
+    sudo podman run "${podman_args[@]}" \
+      quay.io/centos-bootc/bootc-image-builder:latest \
+      build --type raw --target-arch arm64 --rootfs "$rootfs" --output /output "${extra_args[@]}" "$IMAGE_NAME"
 }
 
 run_with_fallbacks() {
@@ -417,6 +483,16 @@ RAW_CANDIDATE="$OUTPUT_DIR/image/disk.raw"
 if [[ -f "$RAW_CANDIDATE" ]]; then
   echo "Raw image: $RAW_CANDIDATE"
 
+  echo "[post] Starting raw image minimization..."
+  post_min_start="$(date +%s)"
   minimize_raw_image "$RAW_CANDIDATE"
+
+  echo "[post] Starting Raspberry Pi native boot artifact staging..."
+  rpi_stage_start="$(date +%s)"
   configure_rpi_native_boot "$RAW_CANDIDATE"
+  rpi_stage_end="$(date +%s)"
+  echo "[post] Pi-native boot artifact staging complete in $((rpi_stage_end - rpi_stage_start))s."
+
+  post_min_end="$(date +%s)"
+  echo "[post] Post-processing complete in $((post_min_end - post_min_start))s."
 fi
