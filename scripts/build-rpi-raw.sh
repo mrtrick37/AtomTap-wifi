@@ -178,25 +178,44 @@ configure_rpi_native_boot() {
     exit 1
   fi
 
-  local firmware_dir=""
-  firmware_dir="$(sudo find "$deploy_root/usr/share" -maxdepth 4 -type f -name 'start4.elf' -printf '%h\n' 2>/dev/null | head -n1)"
-  if [[ -z "$firmware_dir" ]]; then
-    echo "ERROR: Could not locate Raspberry Pi firmware (start4.elf) in deployment." >&2
-    exit 1
-  fi
-
+  local start4_elf=""
+  local fixup4_dat=""
   local uboot_bin=""
-  uboot_bin="$(sudo find "$deploy_root/usr/share" -maxdepth 6 -type f -name 'u-boot.bin' 2>/dev/null | grep -E 'rpi|arm' | head -n1 || true)"
+
+  start4_elf="$(sudo find "$deploy_root" -type f -name 'start4.elf' 2>/dev/null | head -n1 || true)"
+  fixup4_dat="$(sudo find "$deploy_root" -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
+  uboot_bin="$(sudo find "$deploy_root" -type f -name 'u-boot.bin' 2>/dev/null | grep -E 'rpi|aarch64|arm' | head -n1 || true)"
   if [[ -z "$uboot_bin" ]]; then
-    uboot_bin="$(sudo find "$deploy_root/usr/share" -maxdepth 6 -type f -name 'u-boot.bin' 2>/dev/null | head -n1 || true)"
+    uboot_bin="$(sudo find "$deploy_root" -type f -name 'u-boot.bin' 2>/dev/null | head -n1 || true)"
+  fi
+
+  if [[ -z "$start4_elf" ]]; then
+    start4_elf="$(find /usr/share /usr/lib/firmware -type f -name 'start4.elf' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$fixup4_dat" ]]; then
+    fixup4_dat="$(find /usr/share /usr/lib/firmware -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
   fi
   if [[ -z "$uboot_bin" ]]; then
-    echo "ERROR: Could not locate u-boot.bin in deployment." >&2
+    uboot_bin="$(find /usr/share /usr/lib -type f -name 'u-boot.bin' 2>/dev/null | grep -E 'rpi|aarch64|arm' | head -n1 || true)"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(find /usr/share /usr/lib -type f -name 'u-boot.bin' 2>/dev/null | head -n1 || true)"
+  fi
+
+  if [[ -z "$start4_elf" || -z "$fixup4_dat" ]]; then
+    echo "ERROR: Could not locate Raspberry Pi firmware files (start4.elf/fixup4.dat) in deployment or host." >&2
+    echo "Install firmware package(s), e.g.: sudo dnf install -y bcm283x-firmware" >&2
     exit 1
   fi
 
-  sudo cp -f "$firmware_dir/start4.elf" "$efi_mnt/start4.elf"
-  sudo cp -f "$firmware_dir/fixup4.dat" "$efi_mnt/fixup4.dat"
+  if [[ -z "$uboot_bin" ]]; then
+    echo "ERROR: Could not locate u-boot.bin in deployment or host." >&2
+    echo "Install U-Boot package(s), e.g.: sudo dnf install -y uboot-images-armv8" >&2
+    exit 1
+  fi
+
+  sudo cp -f "$start4_elf" "$efi_mnt/start4.elf"
+  sudo cp -f "$fixup4_dat" "$efi_mnt/fixup4.dat"
   sudo cp -f "$uboot_bin" "$efi_mnt/u-boot.bin"
 
   local bls_entry=""
