@@ -5,7 +5,40 @@ IMAGE_NAME="localhost/atomtap-rpi:rc2"
 OCI_ARCHIVE="/tmp/atomtap-rpi-rc2.oci"
 OUTPUT_DIR="${1:-$PWD/output}"
 
+require_arm64_binfmt() {
+  local host_arch
+  host_arch="$(uname -m)"
+
+  if [[ "$host_arch" == "aarch64" || "$host_arch" == "arm64" ]]; then
+    return 0
+  fi
+
+  if [[ ! -r /proc/sys/fs/binfmt_misc/status ]] || [[ "$(< /proc/sys/fs/binfmt_misc/status)" != "enabled" ]]; then
+    cat <<'EOF'
+ERROR: ARM64 cross-build requested on a non-ARM host, but binfmt_misc is not enabled.
+
+Install/register qemu user emulation, then retry:
+  sudo dnf install -y qemu-user-static
+  sudo systemctl restart systemd-binfmt
+EOF
+    exit 1
+  fi
+
+  if ! ls /proc/sys/fs/binfmt_misc 2>/dev/null | grep -Eq 'aarch64|arm64|qemu-aarch64'; then
+    cat <<'EOF'
+ERROR: ARM64 cross-build requested on a non-ARM host, but no ARM64 binfmt handler is registered.
+
+Install/register qemu user emulation, then retry:
+  sudo dnf install -y qemu-user-static
+  sudo systemctl restart systemd-binfmt
+  ls /proc/sys/fs/binfmt_misc | grep -E 'aarch64|arm'
+EOF
+    exit 1
+  fi
+}
+
 mkdir -p "$OUTPUT_DIR"
+require_arm64_binfmt
 
 echo "[1/4] Building arm64 bootc container image: $IMAGE_NAME"
 podman build --platform linux/arm64 -f Containerfile.rpi -t "$IMAGE_NAME" .
