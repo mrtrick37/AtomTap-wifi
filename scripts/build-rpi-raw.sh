@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 IMAGE_NAME="localhost/atomtap-rpi:rc2"
 OCI_ARCHIVE="/tmp/atomtap-rpi-rc2.oci"
 OUTPUT_DIR="${1:-$PWD/output}"
+ROOTFS="${ROOTFS:-btrfs}"
+ALLOW_EXT4_FALLBACK="${ALLOW_EXT4_FALLBACK:-1}"
 
 require_arm64_binfmt() {
   local host_arch
@@ -41,7 +46,7 @@ mkdir -p "$OUTPUT_DIR"
 require_arm64_binfmt
 
 echo "[1/4] Building arm64 bootc container image: $IMAGE_NAME"
-podman build --platform linux/arm64 -f Containerfile.rpi -t "$IMAGE_NAME" .
+podman build --platform linux/arm64 -f "$REPO_ROOT/Containerfile.rpi" -t "$IMAGE_NAME" "$REPO_ROOT"
 
 echo "[2/4] Saving image to OCI archive: $OCI_ARCHIVE"
 podman save --format oci-archive -o "$OCI_ARCHIVE" "$IMAGE_NAME"
@@ -50,7 +55,11 @@ echo "[3/4] Loading image into rootful podman storage"
 sudo podman load -i "$OCI_ARCHIVE"
 
 echo "[4/4] Building raw disk image in: $OUTPUT_DIR"
+echo "Requested rootfs: $ROOTFS"
+
 run_builder() {
+  local rootfs="$1"
+  shift
   local extra_args=("$@")
   local podman_args=(
     --rm
@@ -67,26 +76,53 @@ run_builder() {
 
   sudo podman run "${podman_args[@]}" \
     quay.io/centos-bootc/bootc-image-builder:latest \
-    build --type raw --target-arch arm64 --rootfs btrfs --output /output "${extra_args[@]}" "$IMAGE_NAME"
+    build --type raw --target-arch arm64 --rootfs "$rootfs" --output /output "${extra_args[@]}" "$IMAGE_NAME"
 }
 
-if ! run_builder; then
-  echo "Direct btrfs build failed; retrying with --in-vm..."
-  if ! run_builder --in-vm; then
-    cat <<'EOF'
+run_with_fallbacks() {
+  local rootfs="$1"
 
-ERROR: btrfs raw image build failed in both direct and --in-vm modes.
+  if run_builder "$rootfs"; then
+    return 0
+  fi
+
+  if [[ -e /dev/kvm ]]; then
+    echo "Direct $rootfs build failed; retrying with --in-vm..."
+    if run_builder "$rootfs" --in-vm; then
+      return 0
+    fi
+  else
+    echo "Direct $rootfs build failed; skipping --in-vm fallback because /dev/kvm is not available."
+  fi
+
+  return 1
+}
+
+if ! run_with_fallbacks "$ROOTFS"; then
+  if [[ "$ROOTFS" == "btrfs" && "$ALLOW_EXT4_FALLBACK" == "1" ]]; then
+    echo "btrfs build failed on this host; retrying with ext4 fallback (set ALLOW_EXT4_FALLBACK=0 to disable)."
+    if ! run_with_fallbacks ext4; then
+      cat <<'EOF'
+
+ERROR: raw image build failed for both btrfs and ext4.
 
 Most common causes on this host:
-  1) Kernel/container limitations block btrfs subvolume ioctls in osbuild
+  1) Kernel/container limitations block osbuild filesystem stages
   2) VM fallback cannot start reliably without KVM-capable virtualization
 
-Recommended: run this same script on a host with:
+Recommended: run this script on a host with:
   - modern Fedora kernel
   - /dev/kvm available (hardware virtualization enabled)
   - rootful podman
+EOF
+      exit 1
+    fi
+  else
+    cat <<EOF
 
-The script always builds with: --rootfs btrfs
+ERROR: raw image build failed for rootfs: $ROOTFS
+
+Tip: set ALLOW_EXT4_FALLBACK=1 (default) to auto-fallback from btrfs to ext4 on hosts that cannot build btrfs images.
 EOF
     exit 1
   fi
@@ -94,3 +130,8 @@ fi
 
 echo "Done. Raw artifact(s):"
 ls -lah "$OUTPUT_DIR"
+
+RAW_CANDIDATE="$OUTPUT_DIR/image/disk.raw"
+if [[ -f "$RAW_CANDIDATE" ]]; then
+  echo "Raw image: $RAW_CANDIDATE"
+fi

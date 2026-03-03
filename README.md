@@ -35,6 +35,30 @@ At minimum, ensure these files land in the final image:
 - `/usr/lib/systemd/system/atomtap-forward.service`
 - `/etc/atomtap/forward.env`
 
+## Raw image build (Raspberry Pi)
+
+Use the helper script:
+
+```bash
+sudo bash scripts/build-rpi-raw.sh
+```
+
+Behavior:
+
+- builds `localhost/atomtap-rpi:rc2`
+- generates a raw disk image under `scripts/output/` by default
+- defaults to `ROOTFS=btrfs`
+- if `btrfs` build fails on your host, it automatically retries with `ext4`
+
+Optional environment controls:
+
+```bash
+ROOTFS=btrfs ALLOW_EXT4_FALLBACK=0 sudo bash scripts/build-rpi-raw.sh
+```
+
+- `ROOTFS` (default `btrfs`): requested root filesystem type for image build
+- `ALLOW_EXT4_FALLBACK` (default `1`): when `ROOTFS=btrfs`, retry with `ext4` if btrfs build fails
+
 ## Runtime configuration on the Pi
 
 1. Configure Wi-Fi so `wlan0` has connectivity to your collector.
