@@ -118,11 +118,33 @@ run_builder_with_status_stream() {
   local cmd=("$@")
   local in_ostree_layout=0
   local ostree_started_at=0
-  local last_heartbeat_at=0
+  local progress_line_active=0
+
+  render_ostree_progress_line() {
+    local elapsed="$1"
+    local bar_width=24
+    local cycle_seconds=120
+    local progress_percent=$(((elapsed % (cycle_seconds + 1)) * 100 / cycle_seconds))
+    local filled=$((progress_percent * bar_width / 100))
+    local empty=$((bar_width - filled))
+    local bar_filled bar_empty
+
+    bar_filled="$(printf '%*s' "$filled" '' | tr ' ' '#')"
+    bar_empty="$(printf '%*s' "$empty" '' | tr ' ' '-')"
+
+    printf '\r[status %s] Still initializing ostree layout [%s%s] %3d%% %ss elapsed' \
+      "$(date '+%H:%M:%S')" "$bar_filled" "$bar_empty" "$progress_percent" "$elapsed"
+    progress_line_active=1
+  }
 
   process_builder_line() {
     local line="$1"
     local now
+
+    if (( progress_line_active == 1 )); then
+      printf '\n'
+      progress_line_active=0
+    fi
 
     echo "$line"
 
@@ -130,7 +152,6 @@ run_builder_with_status_stream() {
       now="$(date +%s)"
       in_ostree_layout=1
       ostree_started_at="$now"
-      last_heartbeat_at="$now"
       echo "[status $(date '+%H:%M:%S')] Entered ostree initialization; this can take a few minutes."
       return
     fi
@@ -170,10 +191,7 @@ run_builder_with_status_stream() {
       local now elapsed
       now="$(date +%s)"
       elapsed=$((now - ostree_started_at))
-      if (( now - last_heartbeat_at >= 20 )); then
-        echo "[status $(date '+%H:%M:%S')] Still initializing ostree layout (${elapsed}s elapsed)..."
-        last_heartbeat_at="$now"
-      fi
+      render_ostree_progress_line "$elapsed"
     fi
   done
 
