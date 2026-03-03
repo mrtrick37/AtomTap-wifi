@@ -46,6 +46,7 @@ sudo bash scripts/build-rpi-raw.sh
 Behavior:
 
 - builds `localhost/atomtap-rpi:rc2`
+- installs Raspberry Pi native boot dependencies (`bcm283x-firmware`, `uboot-images-armv8`) into the image
 - generates a raw disk image under `scripts/output/` by default
 - uses `ext4` for root filesystem
 - always minimizes `disk.raw` size after build by shrinking ext4 filesystems and truncating the image
