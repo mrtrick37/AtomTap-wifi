@@ -47,17 +47,29 @@ Behavior:
 
 - builds `localhost/atomtap-rpi:rc2`
 - generates a raw disk image under `scripts/output/` by default
-- defaults to `ROOTFS=btrfs`
-- if `btrfs` build fails on your host, it automatically retries with `ext4`
+- uses `ext4` for root filesystem
+- minimizes `disk.raw` size after build by shrinking ext4 filesystems and truncating the image
+- also generates a maximum-compression `disk.raw.xz` artifact by default
 
 Optional environment controls:
 
 ```bash
-ROOTFS=btrfs ALLOW_EXT4_FALLBACK=0 sudo bash scripts/build-rpi-raw.sh
+sudo bash scripts/build-rpi-raw.sh
 ```
 
-- `ROOTFS` (default `btrfs`): requested root filesystem type for image build
-- `ALLOW_EXT4_FALLBACK` (default `1`): when `ROOTFS=btrfs`, retry with `ext4` if btrfs build fails
+```bash
+MINIMIZE_RAW=1 ROOT_HEADROOM_MIB=256 BOOT_HEADROOM_MIB=64 sudo bash scripts/build-rpi-raw.sh
+```
+
+```bash
+COMPRESS_RAW=1 DROP_UNCOMPRESSED_RAW=1 sudo bash scripts/build-rpi-raw.sh
+```
+
+- `MINIMIZE_RAW` (default `1`): shrink resulting `.raw` to smallest bootable size
+- `ROOT_HEADROOM_MIB` (default `256`): extra free space kept in root partition after minimization
+- `BOOT_HEADROOM_MIB` (default `64`): extra free space kept in boot partition after minimization
+- `COMPRESS_RAW` (default `1`): create `disk.raw.xz` with `xz -9e`
+- `DROP_UNCOMPRESSED_RAW` (default `0`): remove `disk.raw` after compression
 
 ## Runtime configuration on the Pi
 
