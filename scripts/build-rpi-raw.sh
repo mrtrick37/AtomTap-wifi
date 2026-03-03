@@ -8,11 +8,8 @@ IMAGE_NAME="localhost/atomtap-rpi:rc2"
 OCI_ARCHIVE="/tmp/atomtap-rpi-rc2.oci"
 OUTPUT_DIR="${1:-$PWD/output}"
 ROOTFS="ext4"
-MINIMIZE_RAW="${MINIMIZE_RAW:-1}"
 ROOT_HEADROOM_MIB="${ROOT_HEADROOM_MIB:-256}"
 BOOT_HEADROOM_MIB="${BOOT_HEADROOM_MIB:-64}"
-COMPRESS_RAW="${COMPRESS_RAW:-1}"
-DROP_UNCOMPRESSED_RAW="${DROP_UNCOMPRESSED_RAW:-0}"
 
 require_arm64_binfmt() {
   local host_arch
@@ -213,7 +210,7 @@ minimize_raw_image() {
 label: gpt
 unit: sectors
 
-${raw_img}1 : start=$p1_start, size=$p1_size, type=$p1_type
+${raw_img}1 : start=$p1_start, size=$p1_size, type=$p1_type, attrs="LegacyBIOSBootable"
 ${raw_img}2 : start=$p2_start, size=$new_p2_size_sectors, type=$p2_type
 ${raw_img}3 : start=$p3_start, size=$new_p3_size_sectors, type=$p3_type
 EOF
@@ -257,23 +254,5 @@ RAW_CANDIDATE="$OUTPUT_DIR/image/disk.raw"
 if [[ -f "$RAW_CANDIDATE" ]]; then
   echo "Raw image: $RAW_CANDIDATE"
 
-  if [[ "$MINIMIZE_RAW" == "1" ]]; then
-    minimize_raw_image "$RAW_CANDIDATE"
-  fi
-
-  if [[ "$COMPRESS_RAW" == "1" ]]; then
-    if command -v xz >/dev/null 2>&1; then
-      echo "Compressing raw image with xz -9e for smallest distributable artifact..."
-      xz -T0 -9 -e -f -k "$RAW_CANDIDATE"
-      echo "Compressed image: $RAW_CANDIDATE.xz"
-      ls -lh "$RAW_CANDIDATE" "$RAW_CANDIDATE.xz"
-
-      if [[ "$DROP_UNCOMPRESSED_RAW" == "1" ]]; then
-        rm -f "$RAW_CANDIDATE"
-        echo "Removed uncompressed raw image (DROP_UNCOMPRESSED_RAW=1)."
-      fi
-    else
-      echo "Skipping compression: 'xz' not installed."
-    fi
-  fi
+  minimize_raw_image "$RAW_CANDIDATE"
 fi
