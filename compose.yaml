@@ -1,0 +1,6 @@
+services:
+  atomtapwifi:
+    image: atomtapwifi
+    build:
+      context: .
+      dockerfile: ./Dockerfile
