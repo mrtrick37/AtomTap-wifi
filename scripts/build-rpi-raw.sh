@@ -11,6 +11,41 @@ ROOTFS="ext4"
 ROOT_HEADROOM_MIB="${ROOT_HEADROOM_MIB:-256}"
 BOOT_HEADROOM_MIB="${BOOT_HEADROOM_MIB:-64}"
 
+cleanup_previous_run_artifacts() {
+  local raw_img="$OUTPUT_DIR/image/disk.raw"
+  local detached_any=0
+
+  if [[ -z "$OUTPUT_DIR" || "$OUTPUT_DIR" == "/" ]]; then
+    echo "ERROR: Refusing to clean unsafe OUTPUT_DIR value: '$OUTPUT_DIR'" >&2
+    exit 1
+  fi
+
+  echo "[prep] Cleaning artifacts from previous run..."
+
+  if command -v losetup >/dev/null 2>&1 && [[ -f "$raw_img" ]]; then
+    mapfile -t _old_loops < <(sudo losetup -j "$raw_img" | awk -F: '{print $1}')
+    for loopdev in "${_old_loops[@]:-}"; do
+      if [[ -n "$loopdev" ]]; then
+        sudo losetup -d "$loopdev" || true
+        detached_any=1
+      fi
+    done
+  fi
+
+  if (( detached_any == 1 )); then
+    echo "[prep] Detached stale loop devices from prior raw image."
+  fi
+
+  sudo rm -f "$OCI_ARCHIVE"
+  sudo rm -f "$OUTPUT_DIR/manifest-raw.json"
+  sudo rm -f "$OUTPUT_DIR/manifest.json"
+  sudo rm -f "$OUTPUT_DIR/disk.raw"
+  sudo rm -rf "$OUTPUT_DIR/image"
+
+  mkdir -p "$OUTPUT_DIR"
+  echo "[prep] Previous-run cleanup complete."
+}
+
 print_build_identity() {
   local script_hash="unknown"
   local git_commit="unknown"
@@ -64,6 +99,7 @@ EOF
 
 mkdir -p "$OUTPUT_DIR"
 require_arm64_binfmt
+cleanup_previous_run_artifacts
 print_build_identity
 
 echo "[1/4] Building arm64 bootc container image: $IMAGE_NAME"
