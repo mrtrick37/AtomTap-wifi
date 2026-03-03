@@ -1,0 +1,6 @@
+output/
+*.raw
+*.qcow2
+*.vmdk
+*.vhd
+*.ova

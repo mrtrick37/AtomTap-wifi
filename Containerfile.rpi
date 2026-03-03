@@ -1,0 +1,6 @@
+FROM registry.fedoraproject.org/fedora-bootc:42
+
+COPY overlay/ /
+
+RUN chmod 0755 /usr/local/sbin/atomtap-forward.sh /usr/local/sbin/atomtap-firstboot.sh
+RUN ostree container commit
