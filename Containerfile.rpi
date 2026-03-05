@@ -1,10 +1,10 @@
-FROM registry.fedoraproject.org/fedora-bootc:42
+FROM registry.fedoraproject.org/fedora-bootc:44
 
 COPY overlay/ /
 
 RUN dnf -y install \
-		bcm283x-firmware \
-		uboot-images-armv8 \
+	bcm283x-firmware \
+	uboot-images-armv8 \
 	&& dnf clean all
 
 RUN chmod 0755 /usr/local/sbin/atomtap-forward.sh /usr/local/sbin/atomtap-firstboot.sh

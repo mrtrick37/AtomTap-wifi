@@ -1,7 +1,4 @@
-releasever: 43
+releasever: 44
 repos:
-  - fedora
-  - fedora-updates
+  - fedora-devel
 include: fedora-iot-bootc.yaml
-packages:
-  - ssh-key-dir
