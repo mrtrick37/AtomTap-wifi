@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 ENV_FILE="/etc/atomtap/forward.env"
 FIRSTBOOT_ENV_FILE="/etc/atomtap/firstboot.env"
 STATE_DIR="/var/lib/atomtap"

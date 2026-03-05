@@ -3,7 +3,6 @@ Description=AtomTap first-boot setup menu
 After=multi-user.target
 Before=atomtap-forward.service
 ConditionPathExists=!/var/lib/atomtap/firstboot.done
-
 [Service]
 Type=oneshot
 ExecStartPre=/usr/bin/echo "AtomTap setup required: open the active console (/dev/console; tty1 or serial) to continue."
