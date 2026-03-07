@@ -155,7 +155,7 @@ ui_menu() {
   shift 3
   local value
 
-  if ! value="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" --menu "$prompt" 14 78 6 --default-item "$default_item" "$@")"; then
+  if ! value="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" --default-item "$default_item" --menu "$prompt" 14 78 6 "$@")"; then
     return 1
   fi
 
@@ -424,6 +424,7 @@ set_env_value() {
 
   escaped="${value//\\/\\\\}"
   escaped="${escaped//&/\\&}"
+  escaped="${escaped//|/\\|}"
 
   if grep -q "^${key}=" "$file"; then
     sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
@@ -566,7 +567,7 @@ else
 fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  install -D -m 0644 /dev/null "$ENV_FILE"
+  install -D -m 0600 /dev/null "$ENV_FILE"
 fi
 
 set_env_value "$ENV_FILE" "WLAN_SSID" "$WLAN_SSID"

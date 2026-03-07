@@ -13,8 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-IMAGE_NAME="localhost/atomtap-rpi:rc2"
-OCI_ARCHIVE="/tmp/atomtap-rpi-rc2.oci"
+IMAGE_NAME="localhost/atomtap-rpi:rc3"
+OCI_ARCHIVE="/tmp/atomtap-rpi-rc3.oci"
 OUTPUT_DIR="${1:-$PWD/output}"
 ROOTFS="ext4"
 ROOT_HEADROOM_MIB="${ROOT_HEADROOM_MIB:-256}"
@@ -273,11 +273,6 @@ ceil_div() {
 
 configure_rpi_native_boot() {
   local raw_img="$1"
-  local loopdev=""
-  local efi_mnt=""
-  local boot_mnt=""
-  local root_mnt=""
-  local cleanup_needed=0
 
   if [[ ! -f "$raw_img" ]]; then
     return 0
@@ -290,15 +285,31 @@ configure_rpi_native_boot() {
     fi
   done
 
-  echo "Configuring Raspberry Pi native boot artifacts (firmware + U-Boot + extlinux)..."
+  (
+    loopdev=""
+    efi_mnt=""
+    boot_mnt=""
+    root_mnt=""
 
-  loopdev="$(sudo losetup --find --show -P "$raw_img")"
-  efi_mnt="$(mktemp -d)"
-  boot_mnt="$(mktemp -d)"
-  root_mnt="$(mktemp -d)"
-  cleanup_needed=1
+    _rpiboot_cleanup() {
+      [[ -n "$efi_mnt" ]]  && sudo umount   "$efi_mnt"  2>/dev/null || true
+      [[ -n "$boot_mnt" ]] && sudo umount   "$boot_mnt" 2>/dev/null || true
+      [[ -n "$root_mnt" ]] && sudo umount   "$root_mnt" 2>/dev/null || true
+      [[ -n "$efi_mnt" ]]  && sudo rmdir    "$efi_mnt"  2>/dev/null || true
+      [[ -n "$boot_mnt" ]] && sudo rmdir    "$boot_mnt" 2>/dev/null || true
+      [[ -n "$root_mnt" ]] && sudo rmdir    "$root_mnt" 2>/dev/null || true
+      [[ -n "$loopdev" ]]  && sudo losetup -d "$loopdev" 2>/dev/null || true
+    }
+    trap '_rpiboot_cleanup' EXIT INT TERM
 
-  sudo mount "${loopdev}p1" "$efi_mnt"
+    echo "Configuring Raspberry Pi native boot artifacts (firmware + U-Boot + extlinux)..."
+
+    loopdev="$(sudo losetup --find --show -P "$raw_img")"
+    efi_mnt="$(mktemp -d)"
+    boot_mnt="$(mktemp -d)"
+    root_mnt="$(mktemp -d)"
+
+    sudo mount "${loopdev}p1" "$efi_mnt"
   sudo mount "${loopdev}p2" "$boot_mnt"
   sudo mount "${loopdev}p3" "$root_mnt"
 
@@ -440,31 +451,20 @@ os_check=0
 kernel=u-boot.bin
 EOF
 
-  sudo sync
-  sudo umount "$efi_mnt"
-  sudo umount "$boot_mnt"
-  sudo umount "$root_mnt"
-  sudo rmdir "$efi_mnt" "$boot_mnt" "$root_mnt"
-  sudo losetup -d "$loopdev"
-  cleanup_needed=0
+    sudo sync
+    sudo umount "$efi_mnt"
+    sudo umount "$boot_mnt"
+    sudo umount "$root_mnt"
+    sudo rmdir "$efi_mnt" "$boot_mnt" "$root_mnt"
+    sudo losetup -d "$loopdev"
+    efi_mnt="" boot_mnt="" root_mnt="" loopdev=""
+  )
 
   echo "Pi-native boot assets written to partition 1 (FAT)."
-
-  if (( cleanup_needed == 1 )); then
-    [[ -n "$efi_mnt" ]] && sudo umount "$efi_mnt" 2>/dev/null || true
-    [[ -n "$boot_mnt" ]] && sudo umount "$boot_mnt" 2>/dev/null || true
-    [[ -n "$root_mnt" ]] && sudo umount "$root_mnt" 2>/dev/null || true
-    [[ -n "$efi_mnt" ]] && sudo rmdir "$efi_mnt" 2>/dev/null || true
-    [[ -n "$boot_mnt" ]] && sudo rmdir "$boot_mnt" 2>/dev/null || true
-    [[ -n "$root_mnt" ]] && sudo rmdir "$root_mnt" 2>/dev/null || true
-    [[ -n "$loopdev" ]] && sudo losetup -d "$loopdev" 2>/dev/null || true
-  fi
 }
 
 minimize_raw_image() {
   local raw_img="$1"
-  local loopdev=""
-  local cleanup_needed=0
 
   if [[ ! -f "$raw_img" ]]; then
     return 0
@@ -477,77 +477,75 @@ minimize_raw_image() {
     fi
   done
 
-  echo "Minimizing raw image size (shrink ext4 + partition table + file truncate)..."
-  loopdev="$(sudo losetup --find --show -P "$raw_img")"
-  cleanup_needed=1
+  (
+    loopdev=""
 
-  sudo e2fsck -fy "${loopdev}p2"
-  sudo e2fsck -fy "${loopdev}p3"
-  sudo resize2fs -M "${loopdev}p2"
-  sudo resize2fs -M "${loopdev}p3"
-  sudo e2fsck -fy "${loopdev}p2"
-  sudo e2fsck -fy "${loopdev}p3"
+    _minimize_cleanup() {
+      [[ -n "$loopdev" ]] && sudo losetup -d "$loopdev" 2>/dev/null || true
+    }
+    trap '_minimize_cleanup' EXIT INT TERM
 
-  local p1_start p1_size p1_type
-  local p2_start p2_size p2_type
-  local p3_start p3_size p3_type
+    echo "Minimizing raw image size (shrink ext4 + partition table + file truncate)..."
+    loopdev="$(sudo losetup --find --show -P "$raw_img")"
 
-  p1_start="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/1 *:/{print $4; exit}')"
-  p1_size="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/1 *:/{print $6; exit}')"
-  p1_type="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/1 *:/{print $8; exit}')"
+    sudo e2fsck -fy "${loopdev}p2"
+    sudo e2fsck -fy "${loopdev}p3"
+    sudo resize2fs -M "${loopdev}p2"
+    sudo resize2fs -M "${loopdev}p3"
+    sudo e2fsck -fy "${loopdev}p2"
+    sudo e2fsck -fy "${loopdev}p3"
 
-  p2_start="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/2 *:/{print $4; exit}')"
-  p2_size="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/2 *:/{print $6; exit}')"
-  p2_type="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/2 *:/{print $8; exit}')"
+    p1_start="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/1 *:/{print $4; exit}')"
+    p1_size="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/1 *:/{print $6; exit}')"
+    p1_type="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/1 *:/{print $8; exit}')"
 
-  p3_start="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/3 *:/{print $4; exit}')"
-  p3_size="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/3 *:/{print $6; exit}')"
-  p3_type="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/3 *:/{print $8; exit}')"
+    p2_start="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/2 *:/{print $4; exit}')"
+    p2_size="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/2 *:/{print $6; exit}')"
+    p2_type="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/2 *:/{print $8; exit}')"
 
-  if [[ -z "$p1_start" || -z "$p2_start" || -z "$p3_start" ]]; then
-    echo "ERROR: Failed to parse partition table from $raw_img" >&2
-    exit 1
-  fi
+    p3_start="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/3 *:/{print $4; exit}')"
+    p3_size="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/3 *:/{print $6; exit}')"
+    p3_type="$(sudo sfdisk -d "$raw_img" | awk -F'[=, ]+' '/3 *:/{print $8; exit}')"
 
-  local boot_bytes root_bytes
-  local boot_total_bytes root_total_bytes
-  local new_p2_size_sectors new_p3_size_sectors
-  local new_p2_end new_p3_end
-  local gpt_tail_sectors=34
-  local new_total_sectors new_total_bytes
+    if [[ -z "$p1_start" || -z "$p2_start" || -z "$p3_start" ]]; then
+      echo "ERROR: Failed to parse partition table from $raw_img" >&2
+      exit 1
+    fi
 
-  boot_bytes="$(get_ext4_size_bytes "${loopdev}p2")"
-  root_bytes="$(get_ext4_size_bytes "${loopdev}p3")"
+    gpt_tail_sectors=34
 
-  boot_total_bytes=$((boot_bytes + BOOT_HEADROOM_MIB * 1024 * 1024))
-  root_total_bytes=$((root_bytes + ROOT_HEADROOM_MIB * 1024 * 1024))
+    boot_bytes="$(get_ext4_size_bytes "${loopdev}p2")"
+    root_bytes="$(get_ext4_size_bytes "${loopdev}p3")"
 
-  new_p2_size_sectors="$(ceil_div "$boot_total_bytes" 512)"
-  new_p3_size_sectors="$(ceil_div "$root_total_bytes" 512)"
+    boot_total_bytes=$((boot_bytes + BOOT_HEADROOM_MIB * 1024 * 1024))
+    root_total_bytes=$((root_bytes + ROOT_HEADROOM_MIB * 1024 * 1024))
 
-  if (( new_p2_size_sectors > p2_size )); then
-    new_p2_size_sectors="$p2_size"
-  fi
-  if (( new_p3_size_sectors > p3_size )); then
-    new_p3_size_sectors="$p3_size"
-  fi
+    new_p2_size_sectors="$(ceil_div "$boot_total_bytes" 512)"
+    new_p3_size_sectors="$(ceil_div "$root_total_bytes" 512)"
 
-  new_p2_end=$((p2_start + new_p2_size_sectors - 1))
-  if (( new_p2_end >= p3_start )); then
-    new_p2_end=$((p3_start - 1))
-    new_p2_size_sectors=$((new_p2_end - p2_start + 1))
-  fi
+    if (( new_p2_size_sectors > p2_size )); then
+      new_p2_size_sectors="$p2_size"
+    fi
+    if (( new_p3_size_sectors > p3_size )); then
+      new_p3_size_sectors="$p3_size"
+    fi
 
-  new_p3_end=$((p3_start + new_p3_size_sectors - 1))
-  new_total_sectors=$((new_p3_end + gpt_tail_sectors + 1))
-  new_total_bytes=$((new_total_sectors * 512))
+    new_p2_end=$((p2_start + new_p2_size_sectors - 1))
+    if (( new_p2_end >= p3_start )); then
+      new_p2_end=$((p3_start - 1))
+      new_p2_size_sectors=$((new_p2_end - p2_start + 1))
+    fi
 
-  sudo losetup -d "$loopdev"
-  cleanup_needed=0
+    new_p3_end=$((p3_start + new_p3_size_sectors - 1))
+    new_total_sectors=$((new_p3_end + gpt_tail_sectors + 1))
+    new_total_bytes=$((new_total_sectors * 512))
 
-  sudo truncate -s "$new_total_bytes" "$raw_img"
+    sudo losetup -d "$loopdev"
+    loopdev=""
 
-  sudo sfdisk --force "$raw_img" <<EOF
+    sudo truncate -s "$new_total_bytes" "$raw_img"
+
+    sudo sfdisk --force "$raw_img" <<EOF
 label: gpt
 unit: sectors
 
@@ -556,23 +554,19 @@ ${raw_img}2 : start=$p2_start, size=$new_p2_size_sectors, type=$p2_type
 ${raw_img}3 : start=$p3_start, size=$new_p3_size_sectors, type=$p3_type
 EOF
 
-  if command -v sgdisk >/dev/null 2>&1; then
-    sudo sgdisk --attributes=1:set:2 "$raw_img" >/dev/null
-  fi
+    if command -v sgdisk >/dev/null 2>&1; then
+      sudo sgdisk --attributes=1:set:2 "$raw_img" >/dev/null
+    fi
 
-  loopdev="$(sudo losetup --find --show -P "$raw_img")"
-  cleanup_needed=1
-  sudo e2fsck -fy "${loopdev}p2"
-  sudo e2fsck -fy "${loopdev}p3"
-  sudo losetup -d "$loopdev"
-  cleanup_needed=0
+    loopdev="$(sudo losetup --find --show -P "$raw_img")"
+    sudo e2fsck -fy "${loopdev}p2"
+    sudo e2fsck -fy "${loopdev}p3"
+    sudo losetup -d "$loopdev"
+    loopdev=""
 
-  echo "Minimized raw image bytes: $new_total_bytes"
-  ls -lh "$raw_img"
-
-  if (( cleanup_needed == 1 )) && [[ -n "$loopdev" ]]; then
-    sudo losetup -d "$loopdev" || true
-  fi
+    echo "Minimized raw image bytes: $new_total_bytes"
+    ls -lh "$raw_img"
+  )
 }
 
 if ! run_with_fallbacks "$ROOTFS"; then
