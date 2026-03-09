@@ -313,16 +313,16 @@ configure_rpi_native_boot() {
   sudo mount "${loopdev}p2" "$boot_mnt"
   sudo mount "${loopdev}p3" "$root_mnt"
 
-  local deploy_root=""
+  deploy_root=""
   deploy_root="$(sudo find "$root_mnt/ostree/deploy" -maxdepth 4 -type d -name '*.0' | sort | tail -n1)"
   if [[ -z "$deploy_root" ]]; then
     echo "ERROR: Could not locate ostree deployment in root partition for Pi boot setup." >&2
     exit 1
   fi
 
-  local start4_elf=""
-  local fixup4_dat=""
-  local uboot_bin=""
+  start4_elf=""
+  fixup4_dat=""
+  uboot_bin=""
 
   start4_elf="$(sudo find "$deploy_root" -type f -name 'start4.elf' 2>/dev/null | head -n1 || true)"
   fixup4_dat="$(sudo find "$deploy_root" -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
@@ -450,6 +450,7 @@ disable_overscan=1
 os_check=0
 kernel=u-boot.bin
 EOF
+
 
     sudo sync
     sudo umount "$efi_mnt"

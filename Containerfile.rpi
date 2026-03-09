@@ -5,7 +5,10 @@ COPY overlay/ /
 RUN dnf -y install \
 	bcm283x-firmware \
 	uboot-images-armv8 \
+	newt \
+	NetworkManager-wifi \
+	iproute-tc \
 	&& dnf clean all
 
-RUN chmod 0755 /usr/local/sbin/atomtap-forward.sh /usr/local/sbin/atomtap-firstboot.sh
+RUN chmod 0755 /usr/local/sbin/atomtap-forward.sh /usr/local/sbin/atomtap-firstboot.sh /usr/local/sbin/atomtap-console.sh /usr/local/sbin/atomtap-status.sh
 RUN ostree container commit
