@@ -201,8 +201,63 @@ prompt_password() {
   done
 }
 
+scan_ssids() {
+  # Show a non-interactive scanning message on the terminal while we work
+  "$UI_TOOL" --title "$SETUP_TITLE" \
+    --infobox "Scanning for Wi-Fi networks...\n\nPlease wait." 7 50 2>/dev/null || true
+
+  # Wait up to 20 s for NetworkManager to be responsive before scanning
+  local i
+  for (( i = 0; i < 20; i++ )); do
+    nmcli general status >/dev/null 2>&1 && break
+    sleep 1
+  done
+
+  nmcli device set "$WIFI_IFACE" managed yes >/dev/null 2>&1 || true
+  nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
+  sleep 3
+
+  local ssids
+  ssids="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+    | grep -v '^--$' | grep -v '^$' | sort -u || true)"
+
+  # Retry once if the first scan returned nothing
+  if [[ -z "$ssids" ]]; then
+    nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
+    sleep 3
+    ssids="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+      | grep -v '^--$' | grep -v '^$' | sort -u || true)"
+  fi
+
+  printf '%s' "$ssids"
+}
+
 prompt_ssid() {
   local val="$1"
+  local scanned ssid_list item selected
+  local -a menu_args
+  local OTHER="-- Enter manually --"
+
+  if scanned="$(scan_ssids)" && [[ -n "$scanned" ]]; then
+    readarray -t ssid_list <<< "$scanned"
+    menu_args=()
+    for item in "${ssid_list[@]}"; do
+      menu_args+=("$item" "")
+    done
+    menu_args+=("$OTHER" "")
+
+    selected=""
+    # || true: if the menu fails for any reason, fall through to manual entry
+    selected="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" \
+      --menu "Select Wi-Fi network" 20 78 12 "${menu_args[@]}")" || true
+
+    if [[ -n "$selected" && "$selected" != "$OTHER" ]]; then
+      printf '%s' "$selected"
+      return 0
+    fi
+  fi
+
+  # Manual entry (scan empty, menu cancelled, or user chose "Enter manually")
   while true; do
     ui_input "Wi-Fi SSID" "$val" val || return 1
     [[ -n "$val" ]] && { printf '%s' "$val"; return 0; }
@@ -359,6 +414,9 @@ write_env() {
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+# Suppress kernel and audit messages so they don't overwrite the whiptail UI.
+dmesg -n 1 2>/dev/null || true
+
 ensure_ui_tool
 
 ui_msg "Welcome to AtomTap.\n\nThis setup will configure your admin account, Wi-Fi uplink, and collector destination.\n\nForwarding will not start until setup is complete."
@@ -402,10 +460,10 @@ echo "[atomtap] Admin user set."
 write_env
 echo "[atomtap] Config written."
 
+apply_wifi || true
+echo "[atomtap] Wi-Fi profile configured."
+
 touch "$DONE_FILE"
 chmod 0600 "$DONE_FILE"
-
-apply_wifi
-echo "[atomtap] Wi-Fi profile configured."
 
 ui_msg "Setup complete. The device will reboot now and begin forwarding traffic."

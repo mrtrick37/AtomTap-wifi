@@ -10,8 +10,6 @@ ADMIN_USER="${ADMIN_USER:-atomtap}"
 ETH_IFACE="${ETH_IFACE:-eth0}"
 WIFI_IFACE="${WIFI_IFACE:-wlan0}"
 COLLECTOR_IP="${COLLECTOR_IP:-not configured}"
-VXLAN_ID="${VXLAN_ID:-4096}"
-VXLAN_PORT="${VXLAN_PORT:-4789}"
 
 # Suppress kernel/audit messages from overwriting the display
 dmesg -n 1 2>/dev/null || true
@@ -58,8 +56,8 @@ TOP_LINE="╔${_SEP}╗"
 MID_LINE="╠${_SEP}╣"
 BOT_LINE="╚${_SEP}╝"
 BOX_W=$(( CONTENT_W + 6 ))
-# TOP + title + MID + fwd + collector + vxlan + MID + eth-hdr + eth-rx + MID + wifi-hdr + ssid + wifi-tx + MID + time + BOT
-BOX_H=16
+# TOP + title + MID + fwd + collector + MID + eth-hdr + eth-rx + MID + wifi-hdr + ssid + wifi-tx + MID + time + BOT
+BOX_H=15
 
 _R=0
 _C=0
@@ -189,9 +187,6 @@ render() {
 
   _row "  Collector     $COLLECTOR_IP" \
        "  ${WHITE}Collector     ${R}${YELLOW}${COLLECTOR_IP}${R}"
-
-  _row "  VXLAN         ID ${VXLAN_ID}  /  port ${VXLAN_PORT}" \
-       "  ${WHITE}VXLAN         ${R}ID ${VXLAN_ID}  /  port ${VXLAN_PORT}"
 
   _border "$MID_LINE"
 
