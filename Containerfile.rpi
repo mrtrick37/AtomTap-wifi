@@ -6,6 +6,7 @@ RUN dnf -y install \
 	--nodocs \
 	--setopt=install_weak_deps=False \
 	bcm283x-firmware \
+	brcmfmac-firmware \
 	uboot-images-armv8 \
 	newt \
 	NetworkManager-wifi \

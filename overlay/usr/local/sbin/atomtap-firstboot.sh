@@ -201,8 +201,12 @@ prompt_password() {
   done
 }
 
+# scan_ssids: populates the variable named by $1 with newline-separated SSIDs.
+# Runs in the current shell (no subshell) so ui_msg/infobox work reliably.
 scan_ssids() {
-  # Show a non-interactive scanning message on the terminal while we work
+  local -n _ssids_out="$1"
+  _ssids_out=""
+
   "$UI_TOOL" --title "$SETUP_TITLE" \
     --infobox "Scanning for Wi-Fi networks...\n\nPlease wait." 7 50 2>/dev/null || true
 
@@ -213,54 +217,127 @@ scan_ssids() {
     sleep 1
   done
 
+  # Ensure the WiFi kernel module is loaded (RPi uses brcmfmac)
+  modprobe brcmutil >/dev/null 2>&1 || true
+  modprobe brcmfmac >/dev/null 2>&1 || true
+
+  # Wait up to 10 s for the interface to appear after module load
+  local j
+  for (( j = 0; j < 10; j++ )); do
+    [[ -d "/sys/class/net/$WIFI_IFACE" ]] && break
+    sleep 1
+  done
+
+  # Capture diagnostics in case we need to show them
+  local diag_iface diag_lsmod diag_dmesg diag_nm
+  diag_iface="$(ip link show 2>&1 | head -20)"
+  diag_lsmod="$(lsmod | grep -i brcm 2>&1 || echo '(none)')"
+  diag_dmesg="$(dmesg 2>/dev/null | grep -i 'brcm\|wlan\|wifi\|firmware' | tail -10 || echo '(none)')"
+  diag_nm="$(nmcli device 2>&1 || echo '(none)')"
+
+  if [[ ! -d "/sys/class/net/$WIFI_IFACE" ]]; then
+    ui_msg "WARNING: $WIFI_IFACE did not appear after module load.\n\nInterfaces:\n${diag_iface}\n\nbrcm modules:\n${diag_lsmod}\n\ndmesg (wifi):\n${diag_dmesg}\n\nNM devices:\n${diag_nm}"
+  else
+    local iface_state
+    iface_state="$(cat "/sys/class/net/$WIFI_IFACE/operstate" 2>/dev/null || echo 'unknown')"
+    "$UI_TOOL" --title "$SETUP_TITLE" \
+      --infobox "$WIFI_IFACE found (state: ${iface_state})\n\nBringing up and scanning..." 7 50 2>/dev/null || true
+  fi
+
+  ip link set "$WIFI_IFACE" up >/dev/null 2>&1 || true
+  sleep 1
   nmcli device set "$WIFI_IFACE" managed yes >/dev/null 2>&1 || true
   nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
   sleep 3
 
-  local ssids
-  ssids="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+  local raw
+  raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
     | grep -v '^--$' | grep -v '^$' | sort -u || true)"
 
   # Retry once if the first scan returned nothing
-  if [[ -z "$ssids" ]]; then
+  if [[ -z "$raw" ]]; then
     nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
     sleep 3
-    ssids="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+    raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
       | grep -v '^--$' | grep -v '^$' | sort -u || true)"
   fi
 
-  printf '%s' "$ssids"
+  # Show diagnostics if scan is still empty so we can debug why
+  if [[ -z "$raw" ]]; then
+    local diag_scan diag_reg
+    diag_scan="$(nmcli -t device wifi list ifname "$WIFI_IFACE" 2>&1 | head -5 || echo '(none)')"
+    diag_reg="$(iw reg get 2>&1 || echo '(unavailable)')"
+    ui_msg "WARNING: Wi-Fi scan returned no networks on $WIFI_IFACE.\n\nInterfaces:\n${diag_iface}\nbrcm modules:\n${diag_lsmod}\ndmesg:\n${diag_dmesg}\nNM devices:\n${diag_nm}\n\nnmcli wifi raw:\n${diag_scan}\n\nRegulatory:\n${diag_reg}"
+  fi
+
+  _ssids_out="$raw"
 }
 
+# prompt_ssid: prompts for SSID, writing result into the variable named by $1.
+# Runs in the current shell so all UI calls are at top-level — no nested subshells.
 prompt_ssid() {
-  local val="$1"
+  local -n _ssid_result="$1"
+  local val="${_ssid_result:-}"
   local scanned ssid_list item selected
   local -a menu_args
   local OTHER="-- Enter manually --"
 
-  if scanned="$(scan_ssids)" && [[ -n "$scanned" ]]; then
+  # Discard any stale/corrupt value that matches the sentinel or starts with '--'
+  [[ "$val" == "$OTHER" || "$val" == --* ]] && val=""
+
+  scan_ssids scanned
+
+  # Use a tmpfile to capture whiptail output — avoids all command substitutions
+  # so whiptail runs in the current shell with full terminal access.
+  local _tmpfile
+  _tmpfile="$(mktemp)"
+
+  if [[ -n "$scanned" ]]; then
     readarray -t ssid_list <<< "$scanned"
     menu_args=()
     for item in "${ssid_list[@]}"; do
-      menu_args+=("$item" "")
+      menu_args+=("$item" " ")
     done
-    menu_args+=("$OTHER" "")
+    menu_args+=("$OTHER" " ")
 
-    selected=""
-    # || true: if the menu fails for any reason, fall through to manual entry
-    selected="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" \
-      --menu "Select Wi-Fi network" 20 78 12 "${menu_args[@]}")" || true
+    # Self-healing menu loop: buffered Enter keystrokes from preceding
+    # password dialogs can arrive in the tty queue at unpredictable times,
+    # instantly dismissing the menu before the user sees it.  We detect
+    # this by timing: no human can read a list and select in under 1 second,
+    # so any exit faster than that is an auto-dismiss.  Drain and retry.
+    local _start _elapsed _tries=0
+    while (( _tries < 10 )); do
+      dd if=/dev/tty bs=4096 count=1 iflag=nonblock >/dev/null 2>&1 || true
+      sleep 0.1
+      : > "$_tmpfile"
+      _start=$(date +%s 2>/dev/null || echo 0)
+      "$UI_TOOL" --title "$SETUP_TITLE" \
+        --menu "Select Wi-Fi network" 20 78 12 \
+        "${menu_args[@]}" 2>"$_tmpfile" || true
+      _elapsed=$(( $(date +%s 2>/dev/null || echo 9) - _start ))
+      (( _elapsed >= 1 )) && break
+      _tries=$(( _tries + 1 ))
+    done
+    selected="$(cat "$_tmpfile")"
 
     if [[ -n "$selected" && "$selected" != "$OTHER" ]]; then
-      printf '%s' "$selected"
+      _ssid_result="$selected"
+      rm -f "$_tmpfile"
       return 0
     fi
   fi
 
   # Manual entry (scan empty, menu cancelled, or user chose "Enter manually")
   while true; do
-    ui_input "Wi-Fi SSID" "$val" val || return 1
-    [[ -n "$val" ]] && { printf '%s' "$val"; return 0; }
+    "$UI_TOOL" --title "$SETUP_TITLE" \
+      --inputbox "Wi-Fi SSID" 12 78 "$val" 2>"$_tmpfile" \
+      || { rm -f "$_tmpfile"; return 1; }
+    val="$(cat "$_tmpfile")"
+    if [[ -n "$val" ]]; then
+      _ssid_result="$val"
+      rm -f "$_tmpfile"
+      return 0
+    fi
     ui_msg "SSID cannot be empty."
   done
 }
@@ -325,14 +402,15 @@ prompt_gateway() {
 
 set_env_value() {
   local file="$1" key="$2" value="$3"
-  local escaped
-  escaped="${value//\\/\\\\}"
-  escaped="${escaped//&/\\&}"
+  # Use printf %q to produce a bash-safe quoted value, then escape & and | for sed
+  local quoted
+  quoted="$(printf '%q' "$value")"
+  local escaped="${quoted//&/\\&}"
   escaped="${escaped//|/\\|}"
   if grep -q "^${key}=" "$file"; then
     sed -i "s|^${key}=.*|${key}=${escaped}|" "$file"
   else
-    printf '\n%s=%s\n' "$key" "$escaped" >> "$file"
+    printf '%s=%s\n' "$key" "$quoted" >> "$file"
   fi
 }
 
@@ -424,7 +502,7 @@ ui_msg "Welcome to AtomTap.\n\nThis setup will configure your admin account, Wi-
 # Collect inputs
 ADMIN_USER="$(prompt_username "${DEFAULT_ADMIN_USER}")"    || exit 1
 ADMIN_PASS="$(prompt_password "$ADMIN_USER")"              || exit 1
-WLAN_SSID="$(prompt_ssid "${WLAN_SSID:-}")"               || exit 1
+prompt_ssid WLAN_SSID                                      || exit 1
 WLAN_PSK="$(prompt_psk)"                                   || exit 1
 COLLECTOR_IP="$(prompt_collector_ip "${COLLECTOR_IP:-}")"  || exit 1
 WLAN_IPV4_MODE="$(prompt_ipv4_mode "${WLAN_IPV4_MODE:-}")" || exit 1

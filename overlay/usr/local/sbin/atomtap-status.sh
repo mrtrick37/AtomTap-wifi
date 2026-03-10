@@ -4,6 +4,10 @@
 ENV_FILE="/etc/atomtap/forward.env"
 REFRESH_SEC=3
 
+# Ensure bash ${#string} counts characters, not bytes, so box padding
+# calculations are correct for multi-byte UTF-8 chars (—, ●, ○, etc.)
+export LC_ALL=C.UTF-8
+
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
 
 ADMIN_USER="${ADMIN_USER:-atomtap}"
@@ -56,8 +60,8 @@ TOP_LINE="╔${_SEP}╗"
 MID_LINE="╠${_SEP}╣"
 BOT_LINE="╚${_SEP}╝"
 BOX_W=$(( CONTENT_W + 6 ))
-# TOP + title + MID + fwd + collector + MID + eth-hdr + eth-rx + MID + wifi-hdr + ssid + wifi-tx + MID + time + BOT
-BOX_H=15
+# TOP + title + MID + fwd + collector + MID + eth-hdr + eth-rx + eth-mac + MID + wifi-hdr + ssid + wifi-mac + wifi-tx + MID + time + BOT
+BOX_H=17
 
 _R=0
 _C=0
@@ -143,7 +147,7 @@ render() {
   (( _C < 0 )) && _C=0
 
   # Collect interface stats
-  local eth_rx_b eth_rx_p wifi_tx_b wifi_tx_p eth_st wifi_st wifi_conn
+  local eth_rx_b eth_rx_p wifi_tx_b wifi_tx_p eth_st wifi_st wifi_conn eth_mac wifi_mac
   eth_rx_b=$(iface_stat "$ETH_IFACE"  2)
   eth_rx_p=$(iface_stat "$ETH_IFACE"  3)
   wifi_tx_b=$(iface_stat "$WIFI_IFACE" 10)
@@ -153,6 +157,8 @@ render() {
   wifi_conn=$(nmcli -t -f GENERAL.CONNECTION device show "$WIFI_IFACE" 2>/dev/null \
     | awk -F: '/GENERAL.CONNECTION/{print $2; exit}')
   [[ -z "$wifi_conn" ]] && wifi_conn="—"
+  eth_mac=$(cat /sys/class/net/"$ETH_IFACE"/address  2>/dev/null || echo "unknown")
+  wifi_mac=$(cat /sys/class/net/"$WIFI_IFACE"/address 2>/dev/null || echo "unknown")
 
   # Forwarding status
   local fwd_plain fwd_display
@@ -193,8 +199,11 @@ render() {
   _row "  $ETH_IFACE  [$eth_st]  —  tap input" \
        "  ${CYAN}${BOLD}${ETH_IFACE}${R}  [${eth_st_d}]  —  tap input"
 
-  _row "    RX  $eth_rx_str" \
-       "    ${WHITE}RX${R}  ${GREEN}${eth_rx_str}${R}"
+  _row "    RX   $eth_rx_str" \
+       "    ${WHITE}RX${R}   ${GREEN}${eth_rx_str}${R}"
+
+  _row "    MAC  $eth_mac" \
+       "    ${WHITE}MAC${R}  ${WHITE}${eth_mac}${R}"
 
   _border "$MID_LINE"
 
@@ -204,8 +213,11 @@ render() {
   _row "    SSID  $wifi_conn" \
        "    ${WHITE}SSID${R}  ${YELLOW}${wifi_conn}${R}"
 
-  _row "    TX  $wifi_tx_str" \
-       "    ${WHITE}TX${R}  ${GREEN}${wifi_tx_str}${R}"
+  _row "    MAC   $wifi_mac" \
+       "    ${WHITE}MAC${R}   ${WHITE}${wifi_mac}${R}"
+
+  _row "    TX    $wifi_tx_str" \
+       "    ${WHITE}TX${R}    ${GREEN}${wifi_tx_str}${R}"
 
   _border "$MID_LINE"
 
