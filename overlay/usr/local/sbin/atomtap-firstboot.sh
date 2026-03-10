@@ -12,6 +12,7 @@ DEFAULT_ADMIN_USER="atomtap"
 DEFAULT_ADMIN_PASSWORD="atomtap"
 SETUP_TITLE="AtomTap First-Boot Setup"
 WIFI_IFACE="wlan0"
+ETH_IFACE="eth0"
 
 if [[ -f "$FIRSTBOOT_ENV_FILE" ]]; then
   # shellcheck source=/etc/atomtap/firstboot.env
@@ -23,7 +24,34 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
-WIFI_IFACE="${WIFI_IFACE:-wlan0}"
+# Auto-detect WiFi interface: first interface with a wireless directory
+detect_wifi_iface() {
+  local candidate
+  for candidate in /sys/class/net/*/wireless; do
+    [[ -d "$candidate" ]] || continue
+    basename "$(dirname "$candidate")"
+    return
+  done
+  echo "wlan0"
+}
+
+# Auto-detect Ethernet interface: first non-loopback, non-wireless, ARPHRD_ETHER type
+detect_eth_iface() {
+  local iface type
+  for iface in /sys/class/net/*; do
+    iface="$(basename "$iface")"
+    [[ "$iface" == "lo" ]] && continue
+    [[ -d "/sys/class/net/$iface/wireless" ]] && continue
+    type="$(cat "/sys/class/net/$iface/type" 2>/dev/null || echo 0)"
+    [[ "$type" == "1" ]] || continue
+    echo "$iface"
+    return
+  done
+  echo "eth0"
+}
+
+WIFI_IFACE="${WIFI_IFACE:-$(detect_wifi_iface)}"
+ETH_IFACE="${ETH_IFACE:-$(detect_eth_iface)}"
 
 mkdir -p "$STATE_DIR"
 
@@ -299,14 +327,14 @@ apply_wifi() {
 
   if [[ "$WLAN_IPV4_MODE" == "static" ]]; then
     nmcli connection modify "$connection_name" \
-      ipv4.method   manual \
+      ipv4.method    manual \
       ipv4.addresses "$WLAN_IPV4_CIDR" \
-      ipv4.gateway  "$WLAN_IPV4_GATEWAY"
+      ipv4.gateway   "$WLAN_IPV4_GATEWAY"
   else
     nmcli connection modify "$connection_name" \
-      ipv4.method auto
-    nmcli connection modify "$connection_name" \
-      -ipv4.addresses -ipv4.gateway
+      ipv4.method    auto \
+      ipv4.addresses "" \
+      ipv4.gateway   ""
   fi
 
   nmcli connection up "$connection_name" ifname "$WIFI_IFACE" >/dev/null 2>&1 \
@@ -316,6 +344,9 @@ apply_wifi() {
 
 write_env() {
   [[ -f "$ENV_FILE" ]] || install -D -m 0600 /dev/null "$ENV_FILE"
+  set_env_value "$ENV_FILE" "ADMIN_USER"        "$ADMIN_USER"
+  set_env_value "$ENV_FILE" "ETH_IFACE"         "$ETH_IFACE"
+  set_env_value "$ENV_FILE" "WIFI_IFACE"        "$WIFI_IFACE"
   set_env_value "$ENV_FILE" "WLAN_SSID"         "$WLAN_SSID"
   set_env_value "$ENV_FILE" "WLAN_PSK"          "$WLAN_PSK"
   set_env_value "$ENV_FILE" "COLLECTOR_IP"      "$COLLECTOR_IP"

@@ -17,8 +17,8 @@ IMAGE_NAME="localhost/atomtap-rpi:rc3"
 OCI_ARCHIVE="/tmp/atomtap-rpi-rc3.oci"
 OUTPUT_DIR="${1:-$PWD/output}"
 ROOTFS="ext4"
-ROOT_HEADROOM_MIB="${ROOT_HEADROOM_MIB:-256}"
-BOOT_HEADROOM_MIB="${BOOT_HEADROOM_MIB:-64}"
+ROOT_HEADROOM_MIB="${ROOT_HEADROOM_MIB:-64}"
+BOOT_HEADROOM_MIB="${BOOT_HEADROOM_MIB:-32}"
 
 cleanup_previous_run_artifacts() {
   local raw_img="$OUTPUT_DIR/image/disk.raw"
@@ -416,7 +416,7 @@ configure_rpi_native_boot() {
     -e 's/[[:space:]]+/ /g' \
     -e 's/^ //; s/ $//')"
 
-  options_line="$options_sanitized console=ttyS0,115200n8 console=tty1 consoleblank=0 loglevel=7 nomodeset plymouth.enable=0 rd.plymouth=0 systemd.show_status=1 rd.systemd.show_status=1"
+  options_line="$options_sanitized console=ttyS0,115200n8 console=tty1 consoleblank=0 loglevel=7 nomodeset net.ifnames=0 biosdevname=0 plymouth.enable=0 rd.plymouth=0 systemd.show_status=1 rd.systemd.show_status=1"
 
   sudo cp -f "$boot_mnt$linux_path" "$efi_mnt/vmlinuz"
   sudo cp -f "$boot_mnt$initrd_path" "$efi_mnt/initramfs.img"

@@ -25,6 +25,13 @@ require_collector_ip() {
 start_tap() {
   require_collector_ip
 
+  # VXLAN routing requires the WiFi interface to have an IP address.
+  # Exit with failure so the service retries until WiFi is connected.
+  if ! ip -4 addr show "$WIFI_IFACE" 2>/dev/null | grep -q 'inet '; then
+    echo "$WIFI_IFACE has no IPv4 address yet — will retry" >&2
+    exit 1
+  fi
+
   ip link set "$ETH_IFACE" promisc on up
 
   if ! ip link show "$VXLAN_IFACE" >/dev/null 2>&1; then

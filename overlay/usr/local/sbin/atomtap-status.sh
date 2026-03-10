@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
-# AtomTap status display.
-# Runs on tty1 after first-boot setup. Refreshes every few seconds.
+# AtomTap status display — runs on tty1, refreshes every few seconds.
 
 ENV_FILE="/etc/atomtap/forward.env"
 REFRESH_SEC=3
 
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
 
+ADMIN_USER="${ADMIN_USER:-atomtap}"
 ETH_IFACE="${ETH_IFACE:-eth0}"
 WIFI_IFACE="${WIFI_IFACE:-wlan0}"
 COLLECTOR_IP="${COLLECTOR_IP:-not configured}"
 VXLAN_ID="${VXLAN_ID:-4096}"
 VXLAN_PORT="${VXLAN_PORT:-4789}"
 
-# Hide cursor; restore on exit
-tput civis 2>/dev/null || true
-trap 'tput cnorm 2>/dev/null || true' EXIT INT TERM
+# Suppress kernel/audit messages from overwriting the display
+dmesg -n 1 2>/dev/null || true
 
-# Read a single field from /proc/net/dev by column index (awk field number)
+# ── Terminal setup ──────────────────────────────────────────────────────────────
+tput civis 2>/dev/null || true
+trap 'tput cnorm 2>/dev/null || true; tput sgr0 2>/dev/null || true' EXIT INT TERM
+
+R=$(tput sgr0    2>/dev/null || true)
+BOLD=$(tput bold 2>/dev/null || true)
+CYAN=$(tput setaf 6 2>/dev/null || true)
+GREEN=$(tput setaf 2 2>/dev/null || true)
+RED=$(tput setaf 1 2>/dev/null || true)
+YELLOW=$(tput setaf 3 2>/dev/null || true)
+WHITE=$(tput setaf 7 2>/dev/null || true)
+
+# ── Data helpers ────────────────────────────────────────────────────────────────
 iface_stat() {
-  local iface="$1" col="$2"
-  awk -v i="${iface}:" -v c="$col" '$1==i{print $c+0; exit}' /proc/net/dev 2>/dev/null || echo 0
+  awk -v i="${1}:" -v c="$2" '$1==i{print $c+0; exit}' /proc/net/dev 2>/dev/null || echo 0
 }
 
 iface_state() {
@@ -41,49 +51,194 @@ fmt_bytes() {
   fi
 }
 
-fwd_status() {
-  systemctl is-active --quiet atomtap-forward.service 2>/dev/null \
-    && echo "● ACTIVE" || echo "○ inactive"
+# ── Box layout ──────────────────────────────────────────────────────────────────
+CONTENT_W=52
+_SEP=$(printf '═%.0s' $(seq 1 $(( CONTENT_W + 4 ))))
+TOP_LINE="╔${_SEP}╗"
+MID_LINE="╠${_SEP}╣"
+BOT_LINE="╚${_SEP}╝"
+BOX_W=$(( CONTENT_W + 6 ))
+# TOP + title + MID + fwd + collector + vxlan + MID + eth-hdr + eth-rx + MID + wifi-hdr + ssid + wifi-tx + MID + time + BOT
+BOX_H=16
+
+_R=0
+_C=0
+
+_border() {
+  tput cup "$_R" "$_C" 2>/dev/null || true
+  printf '%s%s%s' "$CYAN" "$1" "$R"
+  (( _R++ )) || true
 }
 
-# Box layout: 56 chars of content, 1 space each side = 58 inner, 60 total with borders
-W=56
-SEP=$(printf '═%.0s' $(seq 1 58))
-TOP="╔${SEP}╗"
-MID="╠${SEP}╣"
-BOT="╚${SEP}╝"
+_row() {
+  local plain="$1" display="${2:-$1}"
+  local pad=$(( CONTENT_W - ${#plain} ))
+  (( pad < 0 )) && pad=0
+  tput cup "$_R" "$_C" 2>/dev/null || true
+  printf '%s║%s  %s%*s  %s║%s' "$CYAN" "$R" "$display" "$pad" "" "$CYAN" "$R"
+  (( _R++ )) || true
+}
 
-row() { printf "║ %-${W}s ║\n" "$1"; }
+# ── Reconfigure ─────────────────────────────────────────────────────────────────
+do_reconfigure() {
+  local username="$ADMIN_USER"
 
-tput clear 2>/dev/null || clear
+  # Show cursor for whiptail dialogs
+  tput cnorm 2>/dev/null || true
 
-while true; do
-  tput cup 0 0 2>/dev/null || true
+  # Confirm intent
+  if ! whiptail --title "AtomTap Reconfigure" \
+      --yesno "Restart the setup wizard?\n\nThe current configuration will be replaced and the device will reboot." \
+      10 62 2>/dev/tty; then
+    tput civis 2>/dev/null || true
+    tput clear 2>/dev/null || clear
+    return
+  fi
 
-  # /proc/net/dev columns: $1=iface $2=rx_bytes $3=rx_pkts ... $10=tx_bytes $11=tx_pkts
+  # Prompt for password
+  local password
+  password=$(whiptail --title "AtomTap Reconfigure" \
+    --passwordbox "Admin password for ${username}:" \
+    10 62 3>&1 1>&2 2>&3) || {
+    tput civis 2>/dev/null || true
+    tput clear 2>/dev/null || clear
+    return
+  }
+
+  # Verify password via PAM (pamtester supports yescrypt used by Fedora 44+)
+  if ! printf '%s\n' "$password" | pamtester login "$username" authenticate 2>/dev/null; then
+    whiptail --title "AtomTap Reconfigure" \
+      --msgbox "Incorrect password." 8 40 2>/dev/tty || true
+    tput civis 2>/dev/null || true
+    tput clear 2>/dev/null || clear
+    return
+  fi
+
+  # Authenticated — remove done file and re-run firstboot
+  rm -f /var/lib/atomtap/firstboot.done
+  dmesg -n 1 2>/dev/null || true
+  tput clear 2>/dev/null || clear
+
+  TERM=linux /usr/local/sbin/atomtap-firstboot.sh || true
+
+  # If firstboot completed, trigger reboot and wait for SIGKILL
+  if [[ -f /var/lib/atomtap/firstboot.done ]]; then
+    systemctl --no-block reboot 2>/dev/null || true
+    trap '' TERM INT HUP
+    while true; do sleep 5; done
+  fi
+
+  # Firstboot cancelled or failed — return to status screen
+  tput civis 2>/dev/null || true
+  tput clear 2>/dev/null || clear
+}
+
+# ── Render ───────────────────────────────────────────────────────────────────────
+render() {
+  local term_rows term_cols
+  term_rows=$(tput lines 2>/dev/null || echo 24)
+  term_cols=$(tput cols  2>/dev/null || echo 80)
+
+  _R=$(( (term_rows - BOX_H) / 2 ))
+  _C=$(( (term_cols - BOX_W) / 2 ))
+  (( _R < 0 )) && _R=0
+  (( _C < 0 )) && _C=0
+
+  # Collect interface stats
+  local eth_rx_b eth_rx_p wifi_tx_b wifi_tx_p eth_st wifi_st wifi_conn
   eth_rx_b=$(iface_stat "$ETH_IFACE"  2)
   eth_rx_p=$(iface_stat "$ETH_IFACE"  3)
   wifi_tx_b=$(iface_stat "$WIFI_IFACE" 10)
   wifi_tx_p=$(iface_stat "$WIFI_IFACE" 11)
   eth_st=$(iface_state "$ETH_IFACE")
   wifi_st=$(iface_state "$WIFI_IFACE")
-  fwd=$(fwd_status)
+  wifi_conn=$(nmcli -t -f GENERAL.CONNECTION device show "$WIFI_IFACE" 2>/dev/null \
+    | awk -F: '/GENERAL.CONNECTION/{print $2; exit}')
+  [[ -z "$wifi_conn" ]] && wifi_conn="—"
 
-  echo "$TOP"
-  row "  AtomTap  —  Network Traffic Mirror"
-  echo "$MID"
-  row "  Status     $fwd"
-  row "  Collector  $COLLECTOR_IP"
-  row "  VXLAN      ID ${VXLAN_ID}  /  port ${VXLAN_PORT}"
-  echo "$MID"
-  row "  ${ETH_IFACE}  [${eth_st}]  —  tap input"
-  row "    RX  $(fmt_bytes "$eth_rx_b")   ${eth_rx_p} packets"
-  echo "$MID"
-  row "  ${WIFI_IFACE}  [${wifi_st}]  —  uplink to collector"
-  row "    TX  $(fmt_bytes "$wifi_tx_b")   ${wifi_tx_p} packets"
-  echo "$MID"
-  row "  $(date '+%Y-%m-%d %H:%M:%S')  —  refreshing every ${REFRESH_SEC}s"
-  echo "$BOT"
+  # Forwarding status
+  local fwd_plain fwd_display
+  if systemctl is-active --quiet atomtap-forward.service 2>/dev/null; then
+    fwd_plain="● ACTIVE"
+    fwd_display="${GREEN}${BOLD}● ACTIVE${R}"
+  else
+    fwd_plain="○ INACTIVE"
+    fwd_display="${RED}○ INACTIVE${R}"
+  fi
 
-  sleep "$REFRESH_SEC"
+  # Interface state with color
+  local eth_st_d wifi_st_d
+  case "$eth_st"  in up) eth_st_d="${GREEN}up${R}"  ;; down) eth_st_d="${RED}down${R}"  ;; *) eth_st_d="$eth_st"  ;; esac
+  case "$wifi_st" in up) wifi_st_d="${GREEN}up${R}" ;; down) wifi_st_d="${RED}down${R}" ;; *) wifi_st_d="$wifi_st" ;; esac
+
+  local eth_rx_str wifi_tx_str now
+  eth_rx_str="$(fmt_bytes "$eth_rx_b")   ${eth_rx_p} pkts"
+  wifi_tx_str="$(fmt_bytes "$wifi_tx_b")   ${wifi_tx_p} pkts"
+  now="$(date '+%Y-%m-%d  %H:%M:%S')"
+
+  # ── Draw ─────────────────────────────────────────────────────────────────────
+  _border "$TOP_LINE"
+
+  _row "  AtomTap — Network Traffic Mirror" \
+       "  ${BOLD}${WHITE}AtomTap${R}${WHITE} — Network Traffic Mirror${R}"
+
+  _border "$MID_LINE"
+
+  _row "  Forwarding    $fwd_plain" \
+       "  ${WHITE}Forwarding    ${R}${fwd_display}"
+
+  _row "  Collector     $COLLECTOR_IP" \
+       "  ${WHITE}Collector     ${R}${YELLOW}${COLLECTOR_IP}${R}"
+
+  _row "  VXLAN         ID ${VXLAN_ID}  /  port ${VXLAN_PORT}" \
+       "  ${WHITE}VXLAN         ${R}ID ${VXLAN_ID}  /  port ${VXLAN_PORT}"
+
+  _border "$MID_LINE"
+
+  _row "  $ETH_IFACE  [$eth_st]  —  tap input" \
+       "  ${CYAN}${BOLD}${ETH_IFACE}${R}  [${eth_st_d}]  —  tap input"
+
+  _row "    RX  $eth_rx_str" \
+       "    ${WHITE}RX${R}  ${GREEN}${eth_rx_str}${R}"
+
+  _border "$MID_LINE"
+
+  _row "  $WIFI_IFACE  [$wifi_st]  —  uplink" \
+       "  ${CYAN}${BOLD}${WIFI_IFACE}${R}  [${wifi_st_d}]  —  uplink"
+
+  _row "    SSID  $wifi_conn" \
+       "    ${WHITE}SSID${R}  ${YELLOW}${wifi_conn}${R}"
+
+  _row "    TX  $wifi_tx_str" \
+       "    ${WHITE}TX${R}  ${GREEN}${wifi_tx_str}${R}"
+
+  _border "$MID_LINE"
+
+  _row "  $now" \
+       "  ${WHITE}${now}${R}"
+
+  _border "$BOT_LINE"
+
+  # Hint line centered below the box
+  local hint="[ R ] Reconfigure"
+  local hint_col=$(( _C + (BOX_W - ${#hint}) / 2 ))
+  tput cup "$_R" "$hint_col" 2>/dev/null || true
+  printf '%s%s%s' "$WHITE" "$hint" "$R"
+
+  # Park cursor out of the way
+  tput cup $(( _R + 2 )) 0 2>/dev/null || true
+}
+
+# ── Main loop ────────────────────────────────────────────────────────────────────
+tput clear 2>/dev/null || clear
+
+_key=""
+while true; do
+  render
+  # Wait for a keypress up to REFRESH_SEC; timeout is normal
+  if read -r -s -n 1 -t "$REFRESH_SEC" _key 2>/dev/null; then
+    case "${_key,,}" in
+      r) do_reconfigure ;;
+    esac
+  fi
 done

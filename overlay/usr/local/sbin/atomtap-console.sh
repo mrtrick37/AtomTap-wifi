@@ -20,8 +20,8 @@ if [[ ! -f /var/lib/atomtap/firstboot.done ]]; then
     while true; do sleep 5; done
   fi
 
-  # Setup was cancelled or failed — fall through to re-exec agetty
-  # so the user gets a login prompt (they can rerun setup manually).
+  # Setup was cancelled or failed — fall through to the status screen.
+  # The user can switch to tty2 and rerun setup manually.
 fi
 
 exec /usr/local/sbin/atomtap-status.sh
