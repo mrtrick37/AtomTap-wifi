@@ -1,7 +1,6 @@
 [Unit]
 Description=AtomTap first-boot setup gate
-After=multi-user.target
-Before=atomtap-forward.service
+After=basic.target
 ConditionPathExists=/var/lib/atomtap/firstboot.done
 
 [Service]
