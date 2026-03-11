@@ -154,8 +154,8 @@ render() {
   wifi_tx_p=$(iface_stat "$WIFI_IFACE" 11)
   eth_st=$(iface_state "$ETH_IFACE")
   wifi_st=$(iface_state "$WIFI_IFACE")
-  wifi_conn=$(nmcli -t -f GENERAL.CONNECTION device show "$WIFI_IFACE" 2>/dev/null \
-    | awk -F: '/GENERAL.CONNECTION/{print $2; exit}')
+  wifi_conn=$(nmcli -t -f ACTIVE,SSID dev wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+    | awk -F: '$1=="yes" {print $2; exit}')
   [[ -z "$wifi_conn" ]] && wifi_conn="—"
   eth_mac=$(cat /sys/class/net/"$ETH_IFACE"/address  2>/dev/null || echo "unknown")
   wifi_mac=$(cat /sys/class/net/"$WIFI_IFACE"/address 2>/dev/null || echo "unknown")

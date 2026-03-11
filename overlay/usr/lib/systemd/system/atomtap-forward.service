@@ -1,12 +1,11 @@
 [Unit]
 Description=AtomTap Ethernet-to-WiFi traffic mirror
-After=network.target atomtap-firstboot-setup.service
-Wants=atomtap-firstboot-setup.service
+After=network-online.target atomtap-firstboot-setup.service
+Wants=network-online.target atomtap-firstboot-setup.service
 ConditionPathExists=/var/lib/atomtap/firstboot.done
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=exec
 ExecStart=/usr/local/sbin/atomtap-forward.sh start
 ExecStop=/usr/local/sbin/atomtap-forward.sh stop
 Restart=on-failure

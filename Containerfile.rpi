@@ -7,7 +7,6 @@ RUN dnf -y install \
 	--setopt=install_weak_deps=False \
 	bcm283x-firmware \
 	brcmfmac-firmware \
-	linux-firmware \
 	wireless-regdb \
 	uboot-images-armv8 \
 	newt \
@@ -15,12 +14,21 @@ RUN dnf -y install \
 	wpa_supplicant \
 	iw \
 	rfkill \
-	iproute-tc \
+	tcpdump \
 	pamtester \
 	&& dnf clean all \
 	&& rm -rf /var/cache/dnf /var/lib/dnf/repos
 
+# The brcmfmac-firmware package ships the RPi 5 NVRAM (.txt.xz) but not the
+# board-specific firmware binary.  Symlink the generic binary so the driver
+# loads it directly for this board ID instead of printing a firmware-not-found
+# error before falling back.
+RUN ln -sf brcmfmac43455-sdio.bin.xz \
+    /usr/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,5-model-b.bin.xz
+
 RUN chmod 0755 /usr/local/sbin/atomtap-forward.sh /usr/local/sbin/atomtap-firstboot.sh /usr/local/sbin/atomtap-console.sh /usr/local/sbin/atomtap-status.sh
+
+RUN systemctl enable atomtap-firstboot-setup.service atomtap-forward.service
 
 # Disable udev predictable interface naming so eth0/wlan0 names are preserved
 RUN ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules

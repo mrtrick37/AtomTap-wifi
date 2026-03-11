@@ -306,7 +306,7 @@ scan_ssids() {
   # Step 3 — tell NM to stop managing wlan0 BEFORE we touch it.
   # NM automatically starts wpa_supplicant on any interface it detects.
   # If wpa_supplicant is already running, iw dev scan returns EBUSY.
-  nmcli device set "$WIFI_IFACE" managed no 2>/dev/null || true
+  nmcli device set "$WIFI_IFACE" managed no >/dev/null 2>&1 || true
   pkill -f "wpa_supplicant.*$WIFI_IFACE" 2>/dev/null || true
   sleep 1
 
@@ -364,9 +364,9 @@ scan_ssids() {
       nmcli general status >/dev/null 2>&1 && break
       sleep 1
     done
-    nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
+    nmcli device set "$WIFI_IFACE" managed yes >/dev/null 2>&1 || true
     sleep 2
-    nmcli device wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
+    nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
     sleep 4
 
     raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
@@ -541,7 +541,7 @@ apply_wifi() {
   # Hand the interface to NM now.  During the scan phase we kept NM out of
   # the picture; now we need NM to own the interface so it can persist and
   # autoconnect the profile on every subsequent boot.
-  nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
+  nmcli device set "$WIFI_IFACE" managed yes >/dev/null 2>&1 || true
 
   local connection_name
   connection_name="$(nmcli -t -f NAME,DEVICE connection show \

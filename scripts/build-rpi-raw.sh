@@ -402,18 +402,27 @@ configure_rpi_native_boot() {
 
   # Stage rp1.bin for Raspberry Pi 5 — required for RP1 south bridge initialization.
   # Without it the RP1's SDIO bus never comes up and wlan0 never appears.
-  # Provided by the linux-firmware package at /usr/lib/firmware/rp1.bin.
+  # bcm283x-firmware places rp1.bin alongside start4.elf (firmware_dir).
   local rp1_bin=""
-  rp1_bin="$(sudo find "$deploy_root/usr/lib/firmware" -maxdepth 1 -type f -name 'rp1.bin' 2>/dev/null | head -n1 || true)"
+  # Containerfile stages rp1.bin to /usr/lib/firmware/rp1.bin — check there first.
+  if sudo test -f "$deploy_root/usr/lib/firmware/rp1.bin"; then
+    rp1_bin="$deploy_root/usr/lib/firmware/rp1.bin"
+  fi
+  # Also check alongside start4.elf (bcm283x-firmware layout, in case a future
+  # package ships it there).
+  if [[ -z "$rp1_bin" && -f "$firmware_dir/rp1.bin" ]]; then
+    rp1_bin="$firmware_dir/rp1.bin"
+  fi
+  # Broad search of deployed root as last resort.
   if [[ -z "$rp1_bin" ]]; then
-    rp1_bin="$(find /usr/lib/firmware /usr/share/firmware -maxdepth 2 -type f -name 'rp1.bin' 2>/dev/null | head -n1 || true)"
+    rp1_bin="$(sudo find "$deploy_root" -type f -name 'rp1.bin' 2>/dev/null | head -n1 || true)"
   fi
   if [[ -n "$rp1_bin" ]]; then
     echo "Staging rp1.bin (RPi 5 RP1 south bridge firmware): $rp1_bin"
     sudo cp -f "$rp1_bin" "$efi_mnt/rp1.bin"
   else
     echo "WARNING: rp1.bin not found — RPi 5 WiFi (RP1/SDIO) will not initialize."
-    echo "         Ensure linux-firmware is installed in the container image."
+    echo "         Ensure bcm283x-firmware or linux-firmware is installed in the container image."
   fi
 
   local uboot_dir=""
