@@ -105,9 +105,15 @@ subnet_mask_to_prefix() {
   printf '%s' "$ones"
 }
 
-# ── UI wrappers ────────────────────────────────────────────────────────────────
+# ── UI layer ───────────────────────────────────────────────────────────────────
+#
+# All dialog output is captured via a tmpfile so whiptail always runs in the
+# current shell process with full terminal access.  No command substitution
+# is used to collect dialog results, which eliminates the subshell/tty-buffer
+# timing problems that caused menus to be silently auto-dismissed.
 
 UI_TOOL=""
+_UI_TMPFILE=""
 
 ensure_ui_tool() {
   if command -v whiptail >/dev/null 2>&1; then
@@ -118,6 +124,8 @@ ensure_ui_tool() {
     echo "ERROR: Neither whiptail nor dialog found." >&2
     exit 1
   fi
+  _UI_TMPFILE="$(mktemp)"
+  trap 'rm -f "$_UI_TMPFILE"' EXIT
 }
 
 on_timeout() {
@@ -130,52 +138,73 @@ on_timeout() {
   exit 1
 }
 
-run_ui() {
-  local output rc
+# drain_tty: consume all pending bytes from the tty input buffer.
+# Reads single chars with a short timeout until nothing is left.
+# This prevents buffered keypresses from previous dialogs auto-dismissing
+# the next one.
+drain_tty() {
+  local _c
+  while IFS= read -r -s -n 1 -t 0.05 _c </dev/tty 2>/dev/null; do :; done
+}
 
+# run_dialog: drain tty, then run a dialog command.
+# Output (the user's selection) is written to _UI_TMPFILE via stderr redirect.
+# Returns the dialog's exit code (1 = cancel/ESC, 0 = confirmed).
+run_dialog() {
+  local _rc
+  : > "$_UI_TMPFILE"
+  drain_tty
   if (( FIRSTBOOT_TIMEOUT_SEC > 0 )); then
-    output="$(timeout --foreground "${FIRSTBOOT_TIMEOUT_SEC}" "$@" 3>&1 1>&2 2>&3)" && rc=0 || rc=$?
+    timeout --foreground "${FIRSTBOOT_TIMEOUT_SEC}" \
+      "$UI_TOOL" "$@" 2>"$_UI_TMPFILE" && _rc=0 || _rc=$?
+    (( _rc == 124 )) && on_timeout
   else
-    output="$("$@" 3>&1 1>&2 2>&3)" && rc=0 || rc=$?
+    "$UI_TOOL" "$@" 2>"$_UI_TMPFILE" && _rc=0 || _rc=$?
   fi
-
-  (( rc == 124 )) && on_timeout
-  printf '%s' "$output"
-  return "$rc"
+  return "$_rc"
 }
 
+# ui_msg: display a message box (no output capture needed).
 ui_msg() {
-  run_ui "$UI_TOOL" --title "$SETUP_TITLE" --msgbox "$1" 12 78 || true
+  drain_tty
+  "$UI_TOOL" --title "$SETUP_TITLE" --msgbox "$1" 12 78 2>/dev/null || true
 }
 
+# ui_input PROMPT DEFAULT OUTVAR
 ui_input() {
-  local prompt="$1" default="$2" outvar="$3" value
-  value="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" --inputbox "$prompt" 12 78 "$default")" || return 1
-  printf -v "$outvar" '%s' "$value"
+  local _prompt="$1" _default="$2" _outvar="$3"
+  run_dialog --title "$SETUP_TITLE" --inputbox "$_prompt" 12 78 "$_default" || return 1
+  printf -v "$_outvar" '%s' "$(< "$_UI_TMPFILE")"
 }
 
+# ui_password PROMPT OUTVAR
 ui_password() {
-  local prompt="$1" outvar="$2" value
-  value="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" --passwordbox "$prompt" 12 78)" || return 1
-  printf -v "$outvar" '%s' "$value"
+  local _prompt="$1" _outvar="$2"
+  run_dialog --title "$SETUP_TITLE" --passwordbox "$_prompt" 12 78 || return 1
+  printf -v "$_outvar" '%s' "$(< "$_UI_TMPFILE")"
 }
 
+# ui_menu PROMPT DEFAULT OUTVAR HEIGHT LIST_HEIGHT [ITEM DESC]...
 ui_menu() {
-  local prompt="$1" default="$2" outvar="$3"
-  shift 3
-  local value
-  value="$(run_ui "$UI_TOOL" --title "$SETUP_TITLE" --default-item "$default" --menu "$prompt" 12 78 4 "$@")" || return 1
-  printf -v "$outvar" '%s' "$value"
+  local _prompt="$1" _default="$2" _outvar="$3" _h="$4" _lh="$5"
+  shift 5
+  run_dialog --title "$SETUP_TITLE" --default-item "$_default" \
+    --menu "$_prompt" "$_h" 78 "$_lh" "$@" || return 1
+  printf -v "$_outvar" '%s' "$(< "$_UI_TMPFILE")"
 }
 
+# ui_yesno TEXT  — returns 0 for Yes, 1 for No/ESC
 ui_yesno() {
-  run_ui "$UI_TOOL" --title "$SETUP_TITLE" --yesno "$1" 16 78
+  drain_tty
+  "$UI_TOOL" --title "$SETUP_TITLE" --yesno "$1" 16 78 2>/dev/null
 }
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
+# prompt_username OUTVAR
 prompt_username() {
-  local val="$1"
+  local -n _u_out="$1"
+  local val="${_u_out:-$DEFAULT_ADMIN_USER}"
   while true; do
     ui_input "Admin username" "$val" val || return 1
     [[ -z "$val" ]] && { ui_msg "Username cannot be empty."; continue; }
@@ -183,52 +212,62 @@ prompt_username() {
       ui_msg "Invalid username.\n\nUse lowercase letters, digits, _ or -, starting with a letter or _."
       continue
     }
-    printf '%s' "$val"
+    _u_out="$val"
     return 0
   done
 }
 
+# prompt_password LABEL OUTVAR
 prompt_password() {
   local label="$1"
+  local -n _pw_out="$2"
   local p1 p2
   while true; do
     ui_password "Password for $label" p1 || return 1
     [[ -z "$p1" ]] && { ui_msg "Password cannot be empty."; continue; }
     ui_password "Confirm password for $label" p2 || return 1
     [[ "$p1" != "$p2" ]] && { ui_msg "Passwords do not match. Try again."; continue; }
-    printf '%s' "$p1"
+    _pw_out="$p1"
     return 0
   done
 }
 
-# scan_ssids: populates the variable named by $1 with newline-separated SSIDs.
-# Runs in the current shell (no subshell) so ui_msg/infobox work reliably.
+# scan_ssids OUTVAR
+# Populates the named variable with newline-separated SSIDs.
+# Runs in the current shell so infobox/msgbox display correctly.
+#
+# Bring-up sequence matters on RPi:
+#   1. Unblock rfkill (systemd-rfkill can soft-block the radio)
+#   2. Load brcmfmac kernel module and wait for the interface
+#   3. Set the regulatory domain (requires wireless-regdb; without it the
+#      kernel uses the very restrictive "00" world domain and scanning fails)
+#   4. Hand the interface to NetworkManager and wait for it to be ready
+#   5. Trigger a scan and collect results
 scan_ssids() {
   local -n _ssids_out="$1"
   _ssids_out=""
 
   "$UI_TOOL" --title "$SETUP_TITLE" \
-    --infobox "Scanning for Wi-Fi networks...\n\nPlease wait." 7 50 2>/dev/null || true
+    --infobox "Preparing Wi-Fi interface...\n\nPlease wait." 7 50 2>/dev/null || true
 
-  # Wait up to 20 s for NetworkManager to be responsive before scanning
+  # Step 1 — unblock the WiFi radio.
+  # systemd-rfkill restores any previously saved rfkill state on boot; on a
+  # fresh image that state is absent so the default is unblocked, but we
+  # unblock explicitly to be safe.
+  rfkill unblock wifi 2>/dev/null || true
+
+  # Step 2 — load the Broadcom SDIO WiFi modules (RPi 3/4/5 all use brcmfmac).
+  modprobe brcmutil  2>/dev/null || true
+  modprobe brcmfmac  2>/dev/null || true
+
+  # Wait up to 15 s for the kernel to create the netdev after module load.
   local i
-  for (( i = 0; i < 20; i++ )); do
-    nmcli general status >/dev/null 2>&1 && break
-    sleep 1
-  done
-
-  # Ensure the WiFi kernel module is loaded (RPi uses brcmfmac)
-  modprobe brcmutil >/dev/null 2>&1 || true
-  modprobe brcmfmac >/dev/null 2>&1 || true
-
-  # Wait up to 10 s for the interface to appear after module load
-  local j
-  for (( j = 0; j < 10; j++ )); do
+  for (( i = 0; i < 15; i++ )); do
     [[ -d "/sys/class/net/$WIFI_IFACE" ]] && break
     sleep 1
   done
 
-  # Capture diagnostics in case we need to show them
+  # Capture diagnostics now so we have them if the scan fails later.
   local diag_iface diag_lsmod diag_dmesg diag_nm
   diag_iface="$(ip link show 2>&1 | head -20)"
   diag_lsmod="$(lsmod | grep -i brcm 2>&1 || echo '(none)')"
@@ -237,32 +276,57 @@ scan_ssids() {
 
   if [[ ! -d "/sys/class/net/$WIFI_IFACE" ]]; then
     ui_msg "WARNING: $WIFI_IFACE did not appear after module load.\n\nInterfaces:\n${diag_iface}\n\nbrcm modules:\n${diag_lsmod}\n\ndmesg (wifi):\n${diag_dmesg}\n\nNM devices:\n${diag_nm}"
-  else
-    local iface_state
-    iface_state="$(cat "/sys/class/net/$WIFI_IFACE/operstate" 2>/dev/null || echo 'unknown')"
-    "$UI_TOOL" --title "$SETUP_TITLE" \
-      --infobox "$WIFI_IFACE found (state: ${iface_state})\n\nBringing up and scanning..." 7 50 2>/dev/null || true
+    return 0
   fi
 
-  ip link set "$WIFI_IFACE" up >/dev/null 2>&1 || true
-  sleep 1
-  nmcli device set "$WIFI_IFACE" managed yes >/dev/null 2>&1 || true
-  nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
+  # Step 3 — set the regulatory domain before the interface is associated.
+  # The wireless-regdb package provides /lib/firmware/regulatory.db which the
+  # kernel uses to validate country codes.  Without it (or without setting a
+  # country) the kernel defaults to "00" (world domain) which restricts
+  # scanning to a very small set of channels and often returns no results.
+  # US is used here; it covers 2.4 GHz ch 1-11 and the common 5 GHz bands.
+  iw reg set US 2>/dev/null || true
+
+  # Step 4 — bring the interface up and hand it to NetworkManager.
+  ip link set "$WIFI_IFACE" up 2>/dev/null || true
+
+  # Wait up to 20 s for NetworkManager to be running.
+  for (( i = 0; i < 20; i++ )); do
+    nmcli general status >/dev/null 2>&1 && break
+    sleep 1
+  done
+
+  nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
+
+  # Wait up to 10 s for NM to report the interface as managed.
+  for (( i = 0; i < 10; i++ )); do
+    nmcli -t -f GENERAL.STATE device show "$WIFI_IFACE" 2>/dev/null \
+      | grep -q 'connected\|disconnected\|unavailable\|unmanaged' && break
+    sleep 1
+  done
+
+  local iface_state
+  iface_state="$(cat "/sys/class/net/$WIFI_IFACE/operstate" 2>/dev/null || echo 'unknown')"
+  "$UI_TOOL" --title "$SETUP_TITLE" \
+    --infobox "$WIFI_IFACE ready (state: ${iface_state})\n\nScanning for Wi-Fi networks..." 7 50 2>/dev/null || true
+
+  # Step 5 — scan and collect SSIDs.
+  nmcli device wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
   sleep 3
 
   local raw
   raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
     | grep -v '^--$' | grep -v '^$' | sort -u || true)"
 
-  # Retry once if the first scan returned nothing
+  # Retry once with a longer wait if the first scan returned nothing.
   if [[ -z "$raw" ]]; then
-    nmcli device wifi rescan ifname "$WIFI_IFACE" >/dev/null 2>&1 || true
-    sleep 3
+    nmcli device wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
+    sleep 5
     raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
       | grep -v '^--$' | grep -v '^$' | sort -u || true)"
   fi
 
-  # Show diagnostics if scan is still empty so we can debug why
+  # If still empty, show diagnostics so we can debug on-device.
   if [[ -z "$raw" ]]; then
     local diag_scan diag_reg
     diag_scan="$(nmcli -t device wifi list ifname "$WIFI_IFACE" 2>&1 | head -5 || echo '(none)')"
@@ -273,24 +337,15 @@ scan_ssids() {
   _ssids_out="$raw"
 }
 
-# prompt_ssid: prompts for SSID, writing result into the variable named by $1.
-# Runs in the current shell so all UI calls are at top-level — no nested subshells.
+# prompt_ssid OUTVAR
 prompt_ssid() {
-  local -n _ssid_result="$1"
-  local val="${_ssid_result:-}"
-  local scanned ssid_list item selected
-  local -a menu_args
+  local -n _ssid_out="$1"
+  local val="${_ssid_out:-}"
+  local scanned selected item
+  local -a ssid_list menu_args
   local OTHER="-- Enter manually --"
 
-  # Discard any stale/corrupt value that matches the sentinel or starts with '--'
-  [[ "$val" == "$OTHER" || "$val" == --* ]] && val=""
-
   scan_ssids scanned
-
-  # Use a tmpfile to capture whiptail output — avoids all command substitutions
-  # so whiptail runs in the current shell with full terminal access.
-  local _tmpfile
-  _tmpfile="$(mktemp)"
 
   if [[ -n "$scanned" ]]; then
     readarray -t ssid_list <<< "$scanned"
@@ -300,100 +355,90 @@ prompt_ssid() {
     done
     menu_args+=("$OTHER" " ")
 
-    # Self-healing menu loop: buffered Enter keystrokes from preceding
-    # password dialogs can arrive in the tty queue at unpredictable times,
-    # instantly dismissing the menu before the user sees it.  We detect
-    # this by timing: no human can read a list and select in under 1 second,
-    # so any exit faster than that is an auto-dismiss.  Drain and retry.
-    local _start _elapsed _tries=0
-    while (( _tries < 10 )); do
-      dd if=/dev/tty bs=4096 count=1 iflag=nonblock >/dev/null 2>&1 || true
-      sleep 0.1
-      : > "$_tmpfile"
-      _start=$(date +%s 2>/dev/null || echo 0)
-      "$UI_TOOL" --title "$SETUP_TITLE" \
-        --menu "Select Wi-Fi network" 20 78 12 \
-        "${menu_args[@]}" 2>"$_tmpfile" || true
-      _elapsed=$(( $(date +%s 2>/dev/null || echo 9) - _start ))
-      (( _elapsed >= 1 )) && break
-      _tries=$(( _tries + 1 ))
-    done
-    selected="$(cat "$_tmpfile")"
-
-    if [[ -n "$selected" && "$selected" != "$OTHER" ]]; then
-      _ssid_result="$selected"
-      rm -f "$_tmpfile"
-      return 0
+    selected="${val:-}"
+    if ui_menu "Select Wi-Fi network" "$selected" selected 20 12 "${menu_args[@]}"; then
+      if [[ -n "$selected" && "$selected" != "$OTHER" ]]; then
+        _ssid_out="$selected"
+        return 0
+      fi
+      # User chose "Enter manually" — clear val so inputbox starts blank
+      [[ "$selected" == "$OTHER" ]] && val=""
     fi
+    # ESC/cancel — fall through to manual entry
   fi
 
-  # Manual entry (scan empty, menu cancelled, or user chose "Enter manually")
+  # Manual entry (scan empty, ESC from menu, or "Enter manually" chosen)
   while true; do
-    "$UI_TOOL" --title "$SETUP_TITLE" \
-      --inputbox "Wi-Fi SSID" 12 78 "$val" 2>"$_tmpfile" \
-      || { rm -f "$_tmpfile"; return 1; }
-    val="$(cat "$_tmpfile")"
-    if [[ -n "$val" ]]; then
-      _ssid_result="$val"
-      rm -f "$_tmpfile"
-      return 0
-    fi
+    ui_input "Wi-Fi SSID" "$val" val || return 1
+    [[ -n "$val" ]] && { _ssid_out="$val"; return 0; }
     ui_msg "SSID cannot be empty."
   done
 }
 
+# prompt_psk OUTVAR
 prompt_psk() {
+  local -n _psk_out="$1"
   local p1 p2
   while true; do
     ui_password "Wi-Fi passphrase" p1 || return 1
     [[ -z "$p1" ]] && { ui_msg "Passphrase cannot be empty."; continue; }
     ui_password "Confirm Wi-Fi passphrase" p2 || return 1
     [[ "$p1" != "$p2" ]] && { ui_msg "Passphrases do not match. Try again."; continue; }
-    printf '%s' "$p1"
+    _psk_out="$p1"
     return 0
   done
 }
 
+# prompt_collector_ip OUTVAR
 prompt_collector_ip() {
-  local val="$1"
+  local -n _cip_out="$1"
+  local val="${_cip_out:-}"
   while true; do
     ui_input "Collector IPv4 address (traffic forwarding destination)" "$val" val || return 1
-    valid_ipv4 "$val" && { printf '%s' "$val"; return 0; }
+    valid_ipv4 "$val" && { _cip_out="$val"; return 0; }
     ui_msg "'$val' is not a valid IPv4 address."
   done
 }
 
+# prompt_ipv4_mode OUTVAR
 prompt_ipv4_mode() {
-  local val="${1:-dhcp}"
-  ui_menu "Wi-Fi IPv4 mode for $WIFI_IFACE" "$val" val \
+  local -n _mode_out="$1"
+  local val="${_mode_out:-dhcp}"
+  ui_menu "Wi-Fi IPv4 mode for $WIFI_IFACE" "$val" val 12 2 \
     "dhcp"   "Obtain address automatically (DHCP)" \
     "static" "Use a static IP address" || return 1
-  printf '%s' "$val"
+  _mode_out="$val"
 }
 
+# prompt_static_ip OUTVAR
 prompt_static_ip() {
-  local val="$1"
+  local -n _sip_out="$1"
+  local val="${_sip_out:-}"
   while true; do
     ui_input "$WIFI_IFACE static IPv4 address" "$val" val || return 1
-    valid_ipv4 "$val" && { printf '%s' "$val"; return 0; }
+    valid_ipv4 "$val" && { _sip_out="$val"; return 0; }
     ui_msg "'$val' is not a valid IPv4 address."
   done
 }
 
+# prompt_subnet OUTVAR
 prompt_subnet() {
-  local val="$1"
+  local -n _sub_out="$1"
+  local val="${_sub_out:-}"
   while true; do
     ui_input "$WIFI_IFACE subnet mask  (e.g. 255.255.255.0)" "$val" val || return 1
-    subnet_mask_to_prefix "$val" >/dev/null 2>&1 && { printf '%s' "$val"; return 0; }
+    subnet_mask_to_prefix "$val" >/dev/null 2>&1 && { _sub_out="$val"; return 0; }
     ui_msg "'$val' is not a valid subnet mask."
   done
 }
 
+# prompt_gateway OUTVAR
 prompt_gateway() {
-  local val="$1"
+  local -n _gw_out="$1"
+  local val="${_gw_out:-}"
   while true; do
     ui_input "$WIFI_IFACE default gateway" "$val" val || return 1
-    valid_ipv4 "$val" && { printf '%s' "$val"; return 0; }
+    valid_ipv4 "$val" && { _gw_out="$val"; return 0; }
     ui_msg "'$val' is not a valid IPv4 address."
   done
 }
@@ -402,7 +447,6 @@ prompt_gateway() {
 
 set_env_value() {
   local file="$1" key="$2" value="$3"
-  # Use printf %q to produce a bash-safe quoted value, then escape & and | for sed
   local quoted
   quoted="$(printf '%q' "$value")"
   local escaped="${quoted//&/\\&}"
@@ -499,22 +543,37 @@ ensure_ui_tool
 
 ui_msg "Welcome to AtomTap.\n\nThis setup will configure your admin account, Wi-Fi uplink, and collector destination.\n\nForwarding will not start until setup is complete."
 
-# Collect inputs
-ADMIN_USER="$(prompt_username "${DEFAULT_ADMIN_USER}")"    || exit 1
-ADMIN_PASS="$(prompt_password "$ADMIN_USER")"              || exit 1
-prompt_ssid WLAN_SSID                                      || exit 1
-WLAN_PSK="$(prompt_psk)"                                   || exit 1
-COLLECTOR_IP="$(prompt_collector_ip "${COLLECTOR_IP:-}")"  || exit 1
-WLAN_IPV4_MODE="$(prompt_ipv4_mode "${WLAN_IPV4_MODE:-}")" || exit 1
+# Collect inputs — all run in the current shell, no command substitution,
+# so whiptail has unambiguous terminal ownership at every step.
+ADMIN_USER="$DEFAULT_ADMIN_USER"
+prompt_username ADMIN_USER || exit 1
 
-WLAN_IPV4_ADDRESS="" WLAN_IPV4_SUBNET="" WLAN_IPV4_CIDR="" WLAN_IPV4_GATEWAY=""
+ADMIN_PASS=""
+prompt_password "$ADMIN_USER" ADMIN_PASS || exit 1
+
+WLAN_SSID="${WLAN_SSID:-}"
+prompt_ssid WLAN_SSID || exit 1
+
+WLAN_PSK=""
+prompt_psk WLAN_PSK || exit 1
+
+COLLECTOR_IP="${COLLECTOR_IP:-}"
+prompt_collector_ip COLLECTOR_IP || exit 1
+
+WLAN_IPV4_MODE="${WLAN_IPV4_MODE:-dhcp}"
+prompt_ipv4_mode WLAN_IPV4_MODE || exit 1
+
+WLAN_IPV4_ADDRESS="${WLAN_IPV4_ADDRESS:-}"
+WLAN_IPV4_SUBNET="${WLAN_IPV4_SUBNET:-}"
+WLAN_IPV4_CIDR="${WLAN_IPV4_CIDR:-}"
+WLAN_IPV4_GATEWAY="${WLAN_IPV4_GATEWAY:-}"
 
 if [[ "$WLAN_IPV4_MODE" == "static" ]]; then
-  WLAN_IPV4_ADDRESS="$(prompt_static_ip "${WLAN_IPV4_ADDRESS:-}")" || exit 1
-  WLAN_IPV4_SUBNET="$(prompt_subnet "${WLAN_IPV4_SUBNET:-}")"       || exit 1
-  WLAN_IPV4_GATEWAY="$(prompt_gateway "${WLAN_IPV4_GATEWAY:-}")"   || exit 1
-  prefix="$(subnet_mask_to_prefix "$WLAN_IPV4_SUBNET")"
-  WLAN_IPV4_CIDR="${WLAN_IPV4_ADDRESS}/${prefix}"
+  prompt_static_ip WLAN_IPV4_ADDRESS || exit 1
+  prompt_subnet WLAN_IPV4_SUBNET || exit 1
+  prompt_gateway WLAN_IPV4_GATEWAY || exit 1
+  _prefix="$(subnet_mask_to_prefix "$WLAN_IPV4_SUBNET")"
+  WLAN_IPV4_CIDR="${WLAN_IPV4_ADDRESS}/${_prefix}"
 fi
 
 # Build summary
