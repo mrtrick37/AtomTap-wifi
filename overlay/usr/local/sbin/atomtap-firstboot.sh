@@ -236,102 +236,155 @@ prompt_password() {
 # Populates the named variable with newline-separated SSIDs.
 # Runs in the current shell so infobox/msgbox display correctly.
 #
-# Bring-up sequence matters on RPi:
-#   1. Unblock rfkill (systemd-rfkill can soft-block the radio)
-#   2. Load brcmfmac kernel module and wait for the interface
-#   3. Set the regulatory domain (requires wireless-regdb; without it the
-#      kernel uses the very restrictive "00" world domain and scanning fails)
-#   4. Hand the interface to NetworkManager and wait for it to be ready
-#   5. Trigger a scan and collect results
+# Uses iw dev scan directly — this talks to the driver without requiring
+# NetworkManager to be managing the interface, which avoids all NM
+# initialization race conditions during firstboot.  NM is only used as a
+# last-resort fallback.
+#
+# Bring-up sequence:
+#   1. Unblock rfkill
+#   2. Load brcmfmac and wait for the interface
+#   3. Set regulatory domain (wireless-regdb must be installed)
+#   4. Bring interface UP (no NM involvement)
+#   5. Scan with iw dev scan (direct driver call)
+#   6. Fall back to nmcli scan if iw returns nothing
 scan_ssids() {
   local -n _ssids_out="$1"
   _ssids_out=""
 
+  local LOG="/var/log/atomtap-wifi.log"
+
   "$UI_TOOL" --title "$SETUP_TITLE" \
     --infobox "Preparing Wi-Fi interface...\n\nPlease wait." 7 50 2>/dev/null || true
 
-  # Step 1 — unblock the WiFi radio.
-  # systemd-rfkill restores any previously saved rfkill state on boot; on a
-  # fresh image that state is absent so the default is unblocked, but we
-  # unblock explicitly to be safe.
+  # Everything is logged to $LOG so it can be read via SSH (eth0 is up)
+  # or serial console if the scan fails.
+  {
+    echo "=== AtomTap Wi-Fi diagnostics: $(date) ==="
+    echo "WIFI_IFACE=$WIFI_IFACE"
+  } > "$LOG"
+
+  # Step 1 — unblock radio.
   rfkill unblock wifi 2>/dev/null || true
 
-  # Step 2 — load the Broadcom SDIO WiFi modules (RPi 3/4/5 all use brcmfmac).
-  modprobe brcmutil  2>/dev/null || true
-  modprobe brcmfmac  2>/dev/null || true
+  # Step 2 — load Broadcom SDIO modules.
+  modprobe brcmutil 2>/dev/null || true
+  modprobe brcmfmac 2>/dev/null || true
 
-  # Wait up to 15 s for the kernel to create the netdev after module load.
+  # Wait up to 15 s for the kernel netdev to appear.
   local i
   for (( i = 0; i < 15; i++ )); do
     [[ -d "/sys/class/net/$WIFI_IFACE" ]] && break
     sleep 1
   done
 
-  # Capture diagnostics now so we have them if the scan fails later.
-  local diag_iface diag_lsmod diag_dmesg diag_nm
-  diag_iface="$(ip link show 2>&1 | head -20)"
-  diag_lsmod="$(lsmod | grep -i brcm 2>&1 || echo '(none)')"
-  diag_dmesg="$(dmesg 2>/dev/null | grep -i 'brcm\|wlan\|wifi\|firmware' | tail -10 || echo '(none)')"
-  diag_nm="$(nmcli device 2>&1 || echo '(none)')"
+  # Snapshot diagnostics before touching the interface further.
+  local d_lsmod d_rfkill d_iface d_dmesg d_nm d_reg
+  d_lsmod="$(lsmod | grep -i brcm 2>&1 || echo '(none)')"
+  d_rfkill="$(rfkill list 2>&1 || echo '(none)')"
+  d_iface="$(ip link show 2>&1)"
+  d_dmesg="$(dmesg 2>/dev/null | grep -i 'brcm\|wlan\|wifi\|firmware\|sdio' | tail -20 || echo '(none)')"
+  d_nm="$(nmcli device 2>&1 || echo '(none)')"
+  d_reg="$(iw reg get 2>&1 || echo '(unavailable)')"
+
+  {
+    echo ""
+    printf '--- brcm modules ---\n%s\n' "$d_lsmod"
+    printf '--- rfkill ---\n%s\n' "$d_rfkill"
+    printf '--- ip link ---\n%s\n' "$d_iface"
+    printf '--- dmesg (wifi/sdio/firmware) ---\n%s\n' "$d_dmesg"
+    printf '--- nmcli device ---\n%s\n' "$d_nm"
+    printf '--- regulatory domain ---\n%s\n' "$d_reg"
+  } >> "$LOG"
 
   if [[ ! -d "/sys/class/net/$WIFI_IFACE" ]]; then
-    ui_msg "WARNING: $WIFI_IFACE did not appear after module load.\n\nInterfaces:\n${diag_iface}\n\nbrcm modules:\n${diag_lsmod}\n\ndmesg (wifi):\n${diag_dmesg}\n\nNM devices:\n${diag_nm}"
+    echo "RESULT: interface not found" >> "$LOG"
+    ui_msg "ERROR: $WIFI_IFACE did not appear.\n\nbrcmfmac modules:\n${d_lsmod}\n\nrfkill:\n${d_rfkill}\n\nFull log: $LOG\n(SSH to this device on eth0 to read it)"
     return 0
   fi
 
-  # Step 3 — set the regulatory domain before the interface is associated.
-  # The wireless-regdb package provides /lib/firmware/regulatory.db which the
-  # kernel uses to validate country codes.  Without it (or without setting a
-  # country) the kernel defaults to "00" (world domain) which restricts
-  # scanning to a very small set of channels and often returns no results.
-  # US is used here; it covers 2.4 GHz ch 1-11 and the common 5 GHz bands.
+  # Step 3 — tell NM to stop managing wlan0 BEFORE we touch it.
+  # NM automatically starts wpa_supplicant on any interface it detects.
+  # If wpa_supplicant is already running, iw dev scan returns EBUSY.
+  nmcli device set "$WIFI_IFACE" managed no 2>/dev/null || true
+  pkill -f "wpa_supplicant.*$WIFI_IFACE" 2>/dev/null || true
+  sleep 1
+
+  # Step 4 — set regulatory domain and bring the interface UP.
   iw reg set US 2>/dev/null || true
-
-  # Step 4 — bring the interface up and hand it to NetworkManager.
   ip link set "$WIFI_IFACE" up 2>/dev/null || true
-
-  # Wait up to 20 s for NetworkManager to be running.
-  for (( i = 0; i < 20; i++ )); do
-    nmcli general status >/dev/null 2>&1 && break
-    sleep 1
-  done
-
-  nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
-
-  # Wait up to 10 s for NM to report the interface as managed.
-  for (( i = 0; i < 10; i++ )); do
-    nmcli -t -f GENERAL.STATE device show "$WIFI_IFACE" 2>/dev/null \
-      | grep -q 'connected\|disconnected\|unavailable\|unmanaged' && break
-    sleep 1
-  done
+  sleep 1
 
   local iface_state
   iface_state="$(cat "/sys/class/net/$WIFI_IFACE/operstate" 2>/dev/null || echo 'unknown')"
+  {
+    echo ""
+    printf '--- post-up state ---\noperstate: %s\n%s\n' \
+      "$iface_state" "$(ip link show "$WIFI_IFACE" 2>&1)"
+  } >> "$LOG"
+
   "$UI_TOOL" --title "$SETUP_TITLE" \
-    --infobox "$WIFI_IFACE ready (state: ${iface_state})\n\nScanning for Wi-Fi networks..." 7 50 2>/dev/null || true
+    --infobox "$WIFI_IFACE is up (${iface_state})\n\nScanning for Wi-Fi networks...\n\nThis may take up to 10 seconds." 8 50 2>/dev/null || true
 
-  # Step 5 — scan and collect SSIDs.
-  nmcli device wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
-  sleep 3
+  # Step 5 — scan directly with iw (no NM, no wpa_supplicant needed).
+  # Capture stderr separately so we can log EBUSY or other errors.
+  local raw scan_err
+  raw="$(iw dev "$WIFI_IFACE" scan 2>/tmp/atomtap-iw-err \
+    | grep $'^\tSSID: ' \
+    | sed $'s/^\tSSID: //' \
+    | grep -v '^$' \
+    | sort -u || true)"
+  scan_err="$(cat /tmp/atomtap-iw-err 2>/dev/null)"
 
-  local raw
-  raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
-    | grep -v '^--$' | grep -v '^$' | sort -u || true)"
+  {
+    printf '--- iw dev scan stderr ---\n%s\n' "${scan_err:-(none)}"
+    printf '--- iw dev scan SSIDs ---\n%s\n' "${raw:-(empty)}"
+  } >> "$LOG"
 
-  # Retry once with a longer wait if the first scan returned nothing.
+  # Retry with trigger+dump if first scan returned nothing.
   if [[ -z "$raw" ]]; then
-    nmcli device wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
+    "$UI_TOOL" --title "$SETUP_TITLE" \
+      --infobox "First scan empty — retrying...\n\nPlease wait." 6 50 2>/dev/null || true
+    iw dev "$WIFI_IFACE" scan trigger 2>/dev/null || true
     sleep 5
-    raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
-      | grep -v '^--$' | grep -v '^$' | sort -u || true)"
+    raw="$(iw dev "$WIFI_IFACE" scan dump 2>/dev/null \
+      | grep $'^\tSSID: ' \
+      | sed $'s/^\tSSID: //' \
+      | grep -v '^$' \
+      | sort -u || true)"
+    printf '--- iw scan dump (retry) ---\n%s\n' "${raw:-(empty)}" >> "$LOG"
   fi
 
-  # If still empty, show diagnostics so we can debug on-device.
+  # If iw scan is still empty, fall back to nmcli.
   if [[ -z "$raw" ]]; then
-    local diag_scan diag_reg
-    diag_scan="$(nmcli -t device wifi list ifname "$WIFI_IFACE" 2>&1 | head -5 || echo '(none)')"
-    diag_reg="$(iw reg get 2>&1 || echo '(unavailable)')"
-    ui_msg "WARNING: Wi-Fi scan returned no networks on $WIFI_IFACE.\n\nInterfaces:\n${diag_iface}\nbrcm modules:\n${diag_lsmod}\ndmesg:\n${diag_dmesg}\nNM devices:\n${diag_nm}\n\nnmcli wifi raw:\n${diag_scan}\n\nRegulatory:\n${diag_reg}"
+    "$UI_TOOL" --title "$SETUP_TITLE" \
+      --infobox "Direct scan empty — trying NetworkManager..." 6 50 2>/dev/null || true
+
+    for (( i = 0; i < 20; i++ )); do
+      nmcli general status >/dev/null 2>&1 && break
+      sleep 1
+    done
+    nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
+    sleep 2
+    nmcli device wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
+    sleep 4
+
+    raw="$(nmcli -t -f SSID device wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+      | grep -v '^--$' | grep -v '^$' | sort -u || true)"
+    printf '--- nmcli fallback SSIDs ---\n%s\n' "${raw:-(empty)}" >> "$LOG"
+  fi
+
+  if [[ -z "$raw" ]]; then
+    echo "RESULT: no networks found" >> "$LOG"
+    # Show a compact but readable failure box.
+    # The full log at $LOG has everything needed to diagnose the issue.
+    # SSH to eth0 (which is up) to read it: cat /var/log/atomtap-wifi.log
+    local short_dmesg
+    short_dmesg="$(dmesg 2>/dev/null | grep -i 'brcm\|sdio\|wlan' | tail -5 || echo '(none)')"
+    ui_msg "No Wi-Fi networks found on $WIFI_IFACE.\n\nbrcmfmac:  ${d_lsmod:-(not loaded)}\nrfkill:    ${d_rfkill}\nState:     ${iface_state}\niw error:  ${scan_err:-(none)}\n\ndmesg (last 5 wifi lines):\n${short_dmesg}\n\nFull log saved to:\n  $LOG\nSSH to eth0 and run: cat $LOG"
+  else
+    echo "RESULT: found networks" >> "$LOG"
+    echo "$raw" >> "$LOG"
   fi
 
   _ssids_out="$raw"
@@ -485,6 +538,11 @@ apply_admin_user() {
 }
 
 apply_wifi() {
+  # Hand the interface to NM now.  During the scan phase we kept NM out of
+  # the picture; now we need NM to own the interface so it can persist and
+  # autoconnect the profile on every subsequent boot.
+  nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
+
   local connection_name
   connection_name="$(nmcli -t -f NAME,DEVICE connection show \
     | awk -F: -v dev="$WIFI_IFACE" '$2==dev{print $1;exit}')"

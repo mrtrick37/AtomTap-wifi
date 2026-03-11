@@ -326,10 +326,18 @@ configure_rpi_native_boot() {
 
   start4_elf="$(sudo find "$deploy_root" -type f -name 'start4.elf' 2>/dev/null | head -n1 || true)"
   fixup4_dat="$(sudo find "$deploy_root" -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
-  if [[ -r /usr/share/uboot/rpi_4/u-boot.bin ]]; then
+  # Prefer rpi_5 U-Boot for Raspberry Pi 5; fall back to rpi_4 for Pi 4
+  if [[ -r /usr/share/uboot/rpi_5/u-boot.bin ]]; then
+    uboot_bin="/usr/share/uboot/rpi_5/u-boot.bin"
+  elif [[ -r /usr/lib/uboot/rpi_5/u-boot.bin ]]; then
+    uboot_bin="/usr/lib/uboot/rpi_5/u-boot.bin"
+  elif [[ -r /usr/share/uboot/rpi_4/u-boot.bin ]]; then
     uboot_bin="/usr/share/uboot/rpi_4/u-boot.bin"
   elif [[ -r /usr/lib/uboot/rpi_4/u-boot.bin ]]; then
     uboot_bin="/usr/lib/uboot/rpi_4/u-boot.bin"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(sudo find "$deploy_root" -type f -path '*/uboot/rpi_5/u-boot.bin' 2>/dev/null | head -n1 || true)"
   fi
   if [[ -z "$uboot_bin" ]]; then
     uboot_bin="$(sudo find "$deploy_root" -type f -path '*/uboot/rpi_4/u-boot.bin' 2>/dev/null | head -n1 || true)"
@@ -346,6 +354,9 @@ configure_rpi_native_boot() {
   fi
   if [[ -z "$fixup4_dat" ]]; then
     fixup4_dat="$(find /usr/share /usr/lib/firmware -type f -name 'fixup4.dat' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$uboot_bin" ]]; then
+    uboot_bin="$(find /usr/share /usr/lib -type f -path '*/uboot/rpi_5/u-boot.bin' 2>/dev/null | head -n1 || true)"
   fi
   if [[ -z "$uboot_bin" ]]; then
     uboot_bin="$(find /usr/share /usr/lib -type f -path '*/uboot/rpi_4/u-boot.bin' 2>/dev/null | head -n1 || true)"
@@ -374,6 +385,36 @@ configure_rpi_native_boot() {
   sudo cp -f "$start4_elf" "$efi_mnt/start4.elf"
   sudo cp -f "$fixup4_dat" "$efi_mnt/fixup4.dat"
   sudo cp -f "$uboot_bin" "$efi_mnt/u-boot.bin"
+
+  # Copy DTB overlays from the same directory as start4.elf.
+  # dtoverlay= entries in config.txt (e.g. disable-bt) require the
+  # corresponding .dtbo file to be present in overlays/ on the FAT partition.
+  # Without this directory the GPU firmware silently ignores all dtoverlay lines.
+  local firmware_dir=""
+  firmware_dir="$(dirname "$start4_elf")"
+  if [[ -d "$firmware_dir/overlays" ]]; then
+    echo "Staging DTB overlays from: $firmware_dir/overlays"
+    sudo mkdir -p "$efi_mnt/overlays"
+    sudo cp -f "$firmware_dir/overlays"/*.dtbo "$efi_mnt/overlays/" 2>/dev/null || true
+  else
+    echo "WARNING: No overlays/ directory found at $firmware_dir — dtoverlay= entries in config.txt will not apply."
+  fi
+
+  # Stage rp1.bin for Raspberry Pi 5 — required for RP1 south bridge initialization.
+  # Without it the RP1's SDIO bus never comes up and wlan0 never appears.
+  # Provided by the linux-firmware package at /usr/lib/firmware/rp1.bin.
+  local rp1_bin=""
+  rp1_bin="$(sudo find "$deploy_root/usr/lib/firmware" -maxdepth 1 -type f -name 'rp1.bin' 2>/dev/null | head -n1 || true)"
+  if [[ -z "$rp1_bin" ]]; then
+    rp1_bin="$(find /usr/lib/firmware /usr/share/firmware -maxdepth 2 -type f -name 'rp1.bin' 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -n "$rp1_bin" ]]; then
+    echo "Staging rp1.bin (RPi 5 RP1 south bridge firmware): $rp1_bin"
+    sudo cp -f "$rp1_bin" "$efi_mnt/rp1.bin"
+  else
+    echo "WARNING: rp1.bin not found — RPi 5 WiFi (RP1/SDIO) will not initialize."
+    echo "         Ensure linux-firmware is installed in the container image."
+  fi
 
   local uboot_dir=""
   uboot_dir="$(dirname "$uboot_bin")"
@@ -436,6 +477,10 @@ EOF
   sudo tee "$efi_mnt/config.txt" >/dev/null <<EOF
 arm_64bit=1
 enable_uart=1
+# On RPi 5 the WiFi chip (CYW43455) is connected via RP1 over SDIO.
+# RP1 is initialized by rp1.bin (linux-firmware package) and does not
+# share a UART with Bluetooth, so disable-bt is not needed here.
+# dtoverlay=disable-bt  # RPi 4 only — not used on RPi 5
 hdmi_force_hotplug=1
 hdmi_force_hotplug:0=1
 hdmi_force_hotplug:1=1
