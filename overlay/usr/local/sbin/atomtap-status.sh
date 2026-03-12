@@ -2,7 +2,7 @@
 # AtomTap status display — runs on tty1, refreshes every few seconds.
 
 ENV_FILE="/etc/atomtap/forward.env"
-REFRESH_SEC=3
+REFRESH_SEC=1
 
 # Ensure bash ${#string} counts characters, not bytes, so box padding
 # calculations are correct for multi-byte UTF-8 chars (—, ●, ○, etc.)
@@ -14,6 +14,8 @@ ADMIN_USER="${ADMIN_USER:-atomtap}"
 ETH_IFACE="${ETH_IFACE:-eth0}"
 WIFI_IFACE="${WIFI_IFACE:-wlan0}"
 COLLECTOR_IP="${COLLECTOR_IP:-not configured}"
+ERSPAN_ID="${ERSPAN_ID:-1}"
+ERSPAN_VER="${ERSPAN_VER:-2}"
 
 # Suppress kernel/audit messages from overwriting the display
 dmesg -n 1 2>/dev/null || true
@@ -61,7 +63,7 @@ MID_LINE="╠${_SEP}╣"
 BOT_LINE="╚${_SEP}╝"
 BOX_W=$(( CONTENT_W + 6 ))
 # TOP + title + MID + fwd + collector + MID + eth-hdr + eth-rx + eth-mac + MID + wifi-hdr + ssid + wifi-mac + wifi-tx + MID + time + BOT
-BOX_H=17
+BOX_H=19
 
 _R=0
 _C=0
@@ -175,6 +177,10 @@ render() {
   case "$eth_st"  in up) eth_st_d="${GREEN}up${R}"  ;; down) eth_st_d="${RED}down${R}"  ;; *) eth_st_d="$eth_st"  ;; esac
   case "$wifi_st" in up) wifi_st_d="${GREEN}up${R}" ;; down) wifi_st_d="${RED}down${R}" ;; *) wifi_st_d="$wifi_st" ;; esac
 
+  local wifi_ip
+  wifi_ip=$(ip -4 addr show "$WIFI_IFACE" 2>/dev/null | awk '/inet /{print $2; exit}')
+  [[ -z "$wifi_ip" ]] && wifi_ip="—"
+
   local eth_rx_str wifi_tx_str now
   eth_rx_str="$(fmt_bytes "$eth_rx_b")   ${eth_rx_p} pkts"
   wifi_tx_str="$(fmt_bytes "$wifi_tx_b")   ${wifi_tx_p} pkts"
@@ -190,6 +196,9 @@ render() {
 
   _row "  Forwarding    $fwd_plain" \
        "  ${WHITE}Forwarding    ${R}${fwd_display}"
+
+  _row "  Protocol      GRE/ERSPAN Type $ERSPAN_VER (ID $ERSPAN_ID)" \
+       "  ${WHITE}Protocol      ${R}${YELLOW}GRE/ERSPAN Type ${ERSPAN_VER} (ID ${ERSPAN_ID})${R}"
 
   _row "  Collector     $COLLECTOR_IP" \
        "  ${WHITE}Collector     ${R}${YELLOW}${COLLECTOR_IP}${R}"
@@ -210,11 +219,14 @@ render() {
   _row "  $WIFI_IFACE  [$wifi_st]  —  uplink" \
        "  ${CYAN}${BOLD}${WIFI_IFACE}${R}  [${wifi_st_d}]  —  uplink"
 
+  _row "    MAC   $wifi_mac" \
+       "    ${WHITE}MAC${R}   ${WHITE}${wifi_mac}${R}"
+
   _row "    SSID  $wifi_conn" \
        "    ${WHITE}SSID${R}  ${YELLOW}${wifi_conn}${R}"
 
-  _row "    MAC   $wifi_mac" \
-       "    ${WHITE}MAC${R}   ${WHITE}${wifi_mac}${R}"
+  _row "    IP    $wifi_ip" \
+       "    ${WHITE}IP${R}    ${YELLOW}${wifi_ip}${R}"
 
   _row "    TX    $wifi_tx_str" \
        "    ${WHITE}TX${R}    ${GREEN}${wifi_tx_str}${R}"
