@@ -4,7 +4,7 @@ set -euo pipefail
 ENV_FILE="/etc/atomtap/forward.env"
 TUNNEL_IFACE="atomtap-erspan"
 ERSPAN_ID="${ERSPAN_ID:-1}"
-ERSPAN_VER="${ERSPAN_VER:-2}"
+ERSPAN_VER="${ERSPAN_VER:-1}"
 
 if [[ -f "$ENV_FILE" ]]; then
   # shellcheck source=/etc/atomtap/forward.env
