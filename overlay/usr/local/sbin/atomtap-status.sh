@@ -197,8 +197,8 @@ render() {
   _row "  Forwarding    $fwd_plain" \
        "  ${WHITE}Forwarding    ${R}${fwd_display}"
 
-  _row "  Protocol      GRE/ERSPAN Type $ERSPAN_VER (ID $ERSPAN_ID)" \
-       "  ${WHITE}Protocol      ${R}${YELLOW}GRE/ERSPAN Type ${ERSPAN_VER} (ID ${ERSPAN_ID})${R}"
+    _row "  Protocol      Unencapsulated SPAN (mirror)" \
+      "  ${WHITE}Protocol      ${R}${YELLOW}Unencapsulated SPAN (mirror)${R}"
 
   _row "  Collector     $COLLECTOR_IP" \
        "  ${WHITE}Collector     ${R}${YELLOW}${COLLECTOR_IP}${R}"
